@@ -15,23 +15,23 @@ export function CameraEvidenceStep() {
   return (
     <div className="space-y-5">
       <div className="border-b border-appBorder pb-2">
-        <h2 className="text-sm font-bold text-darkNeutral">2. Capture Live Damage Evidence</h2>
-        <p className="text-xs text-slate-500 mt-0.5">
-          Please capture live, clear photos of the physical damage or defect. Direct device capture ensures immediate verification.
+        <h2 className="text-sm sm:text-base font-bold text-darkNeutral">2. Capture Live Damage Evidence</h2>
+        <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+          Please capture live, clear photos of the physical damage or defect using your device camera. Gallery uploads are disabled to ensure real-time verification integrity.
         </p>
       </div>
 
       {/* Captured Evidence Gallery */}
       {evidenceItems.length > 0 && (
-        <div className="space-y-2">
+        <div className="space-y-2.5">
           <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-            <span>Captured Photos ({evidenceItems.length})</span>
+            <span>Captured Live Photos ({evidenceItems.length})</span>
             <span className="text-emerald-600 flex items-center gap-1 text-[11px]">
               <CheckCircle2 className="w-3.5 h-3.5" /> Evidence Attached
             </span>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3.5">
             {evidenceItems.map((item, idx) => (
               <div
                 key={item.id || idx}

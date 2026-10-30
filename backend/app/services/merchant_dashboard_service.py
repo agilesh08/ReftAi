@@ -726,7 +726,7 @@ def build_explainable_report(
     }
 
     section_ai_audit_trail = {
-        "gemini_vision_model": "gemini-2.5-flash",
+        "gemini_vision_model": settings.GEMINI_VISION_MODEL,
         "llama_model": "llama3.2:1b",
         "fusion_engine_version": fusion.fusion_version if fusion else settings.FUSION_VERSION,
         "prompt_version": settings.LLAMA_FUSION_PROMPT_VERSION,

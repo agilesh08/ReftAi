@@ -82,7 +82,7 @@ export function WorkflowRunnerPage() {
     <div className="min-h-screen bg-appBg flex flex-col justify-between">
       <CustomerHeader orderId={session.orderId} />
 
-      <main className="flex-1 max-w-xl w-full mx-auto px-4 sm:px-6 py-6 flex flex-col justify-between">
+      <main className="flex-1 max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-4xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 flex flex-col justify-between transition-all">
         <div className="space-y-6">
           {/* Step Progress Tracker */}
           <div className="bg-white p-4 rounded-2xl border border-appBorder shadow-sm space-y-3">

@@ -239,26 +239,38 @@ class GeminiVisionService:
             len(reference_images),
         )
 
-        try:
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=contents,
-                config=config,
-            )
-        except Exception as exc:
-            if self._is_auth_error(exc):
-                # Auth errors are configuration failures — fast-fail immediately.
-                # Customer should not wait through retries for a misconfigured API key.
-                logger.error(
-                    "Gemini Vision AUTHENTICATION FAILURE (fast-fail): %s. "
-                    "Check GEMINI_API_KEY in .env — OAuth/ADC tokens are not supported.",
-                    exc,
+        models_to_try = [self.model_name]
+        for fallback in ["gemini-flash-lite-latest", "gemini-2.5-flash"]:
+            if fallback not in models_to_try:
+                models_to_try.append(fallback)
+
+        response = None
+        last_exc = None
+        for m in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=m,
+                    contents=contents,
+                    config=config,
                 )
-                raise ValueError(
-                    f"Gemini Vision authentication failed (API key invalid or unsupported). "
-                    f"Configure GEMINI_API_KEY correctly in .env. Detail: {exc}"
-                ) from exc
-            raise
+                self.model_name = m
+                break
+            except Exception as exc:
+                if self._is_auth_error(exc):
+                    logger.error(
+                        "Gemini Vision AUTHENTICATION FAILURE (fast-fail): %s. "
+                        "Check GEMINI_API_KEY in .env — OAuth/ADC tokens are not supported.",
+                        exc,
+                    )
+                    raise ValueError(
+                        f"Gemini Vision authentication failed (API key invalid or unsupported). "
+                        f"Configure GEMINI_API_KEY correctly in .env. Detail: {exc}"
+                    ) from exc
+                logger.warning("Gemini Vision model %s failed (%s); attempting next candidate", m, exc)
+                last_exc = exc
+
+        if response is None:
+            raise last_exc or RuntimeError("All Gemini Vision model candidates failed")
 
         if not response.text:
             raise RuntimeError("Gemini Vision returned empty text response")
@@ -303,16 +315,30 @@ class GeminiVisionService:
             response_schema=ProductReferenceAnalysisResult,
         )
 
-        try:
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=contents,
-                config=config,
-            )
-        except Exception as exc:
-            if self._is_auth_error(exc):
-                raise ValueError(f"Gemini authentication failed: {exc}") from exc
-            raise
+        models_to_try = [self.model_name]
+        for fallback in ["gemini-flash-lite-latest", "gemini-2.5-flash"]:
+            if fallback not in models_to_try:
+                models_to_try.append(fallback)
+
+        response = None
+        last_exc = None
+        for m in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=m,
+                    contents=contents,
+                    config=config,
+                )
+                self.model_name = m
+                break
+            except Exception as exc:
+                if self._is_auth_error(exc):
+                    raise ValueError(f"Gemini authentication failed: {exc}") from exc
+                logger.warning("Gemini Vision reference model %s failed (%s); attempting fallback", m, exc)
+                last_exc = exc
+
+        if response is None:
+            raise last_exc or RuntimeError("All Gemini Vision reference model candidates failed")
 
         if not response.text:
             raise RuntimeError("Gemini Vision returned empty text response for reference image")

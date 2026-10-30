@@ -147,7 +147,7 @@ export function SessionOverviewPage() {
     <div className="min-h-screen bg-appBg flex flex-col justify-between">
       <CustomerHeader orderId={session.orderId} />
 
-      <main className="flex-1 max-w-xl w-full mx-auto px-4 sm:px-6 py-8 flex flex-col justify-center">
+      <main className="flex-1 max-w-xl md:max-w-2xl lg:max-w-3xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col justify-center transition-all">
         <div className="bg-white rounded-3xl border border-appBorder shadow-sm p-6 sm:p-8 space-y-6">
           {/* Top Merchant Brand & Item */}
           <div className="text-center space-y-2">

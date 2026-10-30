@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # AI Configuration (Milestones 7, 8, 9)
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_VISION_MODEL: str = "gemini-2.5-flash"
+    GEMINI_VISION_MODEL: str = "gemini-flash-lite-latest"
     GEMINI_VISION_PROMPT_VERSION: str = "v1"
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"

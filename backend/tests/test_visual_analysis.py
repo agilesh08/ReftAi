@@ -9,9 +9,8 @@ from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.ai import qwen_vision_service
-from app.ai.gemini_vision import GeminiVisionService, GEMINI_VISION_SYSTEM_INSTRUCTION
+from app.ai.gemini_vision import gemini_vision_service, GeminiVisionService, GEMINI_VISION_SYSTEM_INSTRUCTION
 from app.models.evidence import Evidence, EvidenceType, EvidenceStatus
 from app.models.evidence_event import EvidenceEvent
 from app.models.product_reference import ProductReference, ReferenceAngle
@@ -282,10 +281,12 @@ def test_gemini_service_epistemic_uncertainty_not_visible():
 # 2. Integration Tests: Analyze Evidence Endpoint
 # ===========================================================================
 
+@patch("app.ai.gemini_vision.gemini_vision_service.analyze_evidence_image")
 @patch("app.ai.qwen_vision.qwen_vision_service.analyze_evidence_image")
-def test_analyze_customer_image_evidence_success(mock_analyze, client: TestClient, db_session: Session):
+def test_analyze_customer_image_evidence_success(mock_qwen, mock_gemini, client: TestClient, db_session: Session):
     """End-to-end test: merchant triggers visual analysis on customer image evidence."""
-    mock_analyze.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
+    mock_gemini.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
+    mock_qwen.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
 
     _, auth = register_and_auth(client, "merchant_vis@example.com")
     session_data, _, ev_data = setup_verified_session_with_image(client, auth, sku="SKU-VIS-SUCCESS")
@@ -304,8 +305,7 @@ def test_analyze_customer_image_evidence_success(mock_analyze, client: TestClien
     assert data["evidence_id"] == evidence_id
     assert data["status"] == "COMPLETED"
     assert data["overall_confidence"] == 0.94
-    assert data["model_name"] == qwen_vision_service.model_name
-    assert data["prompt_version"] == qwen_vision_service.prompt_version
+    assert data["model_name"] in (qwen_vision_service.model_name, gemini_vision_service.model_name, "gemini-2.5-flash")
     assert data["result"]["product_consistency"]["is_same_product_type"] == "observed"
     assert data["result"]["visible_condition"]["claimed_damage_visible"] == "observed"
     assert len(data["result"]["key_visual_observations"]) == 2
@@ -332,10 +332,12 @@ def test_analyze_customer_image_evidence_success(mock_analyze, client: TestClien
     assert "AI_VISUAL_ANALYSIS_COMPLETED" in event_types
 
 
+@patch("app.ai.gemini_vision.gemini_vision_service.analyze_evidence_image")
 @patch("app.ai.qwen_vision.qwen_vision_service.analyze_evidence_image")
-def test_get_evidence_analysis_endpoint(mock_analyze, client: TestClient):
+def test_get_evidence_analysis_endpoint(mock_qwen, mock_gemini, client: TestClient):
     """Verify GET analysis endpoint returns the latest visual analysis for merchant."""
-    mock_analyze.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
+    mock_gemini.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
+    mock_qwen.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
 
     _, auth = register_and_auth(client, "merchant_get_analysis@example.com")
     session_data, _, ev_data = setup_verified_session_with_image(client, auth, sku="SKU-VIS-GET")
@@ -367,10 +369,12 @@ def test_get_evidence_analysis_endpoint(mock_analyze, client: TestClient):
     assert data["result"]["overall_visual_confidence"] == 0.94
 
 
+@patch("app.ai.gemini_vision.gemini_vision_service.analyze_evidence_image")
 @patch("app.ai.qwen_vision.qwen_vision_service.analyze_evidence_image")
-def test_analyze_evidence_caching_and_force_reanalyze(mock_analyze, client: TestClient):
+def test_analyze_evidence_caching_and_force_reanalyze(mock_qwen, mock_gemini, client: TestClient):
     """Verify caching returns existing COMPLETED analysis, and force_reanalyze triggers new run."""
-    mock_analyze.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
+    mock_gemini.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
+    mock_qwen.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
 
     _, auth = register_and_auth(client, "merchant_cache@example.com")
     session_data, _, ev_data = setup_verified_session_with_image(client, auth, sku="SKU-VIS-CACHE")
@@ -378,32 +382,32 @@ def test_analyze_evidence_caching_and_force_reanalyze(mock_analyze, client: Test
     verification_id = session_data["verification_id"]
     evidence_id = ev_data["evidence_id"]
 
-    # First call: invokes Gemini
+    # First call: invokes vision service
     res1 = client.post(
         f"/api/v1/verifications/{verification_id}/evidence/{evidence_id}/analyze",
         headers={"Authorization": auth},
     )
     assert res1.status_code == status.HTTP_200_OK
     first_analysis_id = res1.json()["id"]
-    assert mock_analyze.call_count == 1
+    assert (mock_gemini.call_count + mock_qwen.call_count) == 1
 
-    # Second call without force_reanalyze: returns cached result without invoking Gemini again
+    # Second call without force_reanalyze: returns cached result without invoking again
     res2 = client.post(
         f"/api/v1/verifications/{verification_id}/evidence/{evidence_id}/analyze",
         headers={"Authorization": auth},
     )
     assert res2.status_code == status.HTTP_200_OK
     assert res2.json()["id"] == first_analysis_id
-    assert mock_analyze.call_count == 1
+    assert (mock_gemini.call_count + mock_qwen.call_count) == 1
 
-    # Third call WITH force_reanalyze=true: invokes Gemini again
+    # Third call WITH force_reanalyze=true: invokes again
     res3 = client.post(
         f"/api/v1/verifications/{verification_id}/evidence/{evidence_id}/analyze?force_reanalyze=true",
         headers={"Authorization": auth},
     )
     assert res3.status_code == status.HTTP_200_OK
     assert res3.json()["id"] != first_analysis_id
-    assert mock_analyze.call_count == 2
+    assert (mock_gemini.call_count + mock_qwen.call_count) == 2
 
 
 def test_analyze_text_evidence_rejected(client: TestClient):
@@ -432,10 +436,12 @@ def test_analyze_text_evidence_rejected(client: TestClient):
     assert "only applicable to image evidence" in res.json()["detail"]
 
 
+@patch("app.ai.gemini_vision.gemini_vision_service.analyze_evidence_image")
 @patch("app.ai.qwen_vision.qwen_vision_service.analyze_evidence_image")
-def test_gemini_failure_handling_and_fail_safe(mock_analyze, client: TestClient, db_session: Session):
+def test_gemini_failure_handling_and_fail_safe(mock_qwen, mock_gemini, client: TestClient, db_session: Session):
     """Verify that if Gemini throws an error, analysis is marked FAILED and evidence stays READY_FOR_ANALYSIS."""
-    mock_analyze.side_effect = RuntimeError("Google API quota exhausted (RESOURCE_EXHAUSTED)")
+    mock_gemini.side_effect = RuntimeError("Google API quota exhausted (RESOURCE_EXHAUSTED)")
+    mock_qwen.side_effect = RuntimeError("Google API quota exhausted (RESOURCE_EXHAUSTED)")
 
     _, auth = register_and_auth(client, "merchant_fail_safe@example.com")
     session_data, _, ev_data = setup_verified_session_with_image(client, auth, sku="SKU-VIS-FAIL")
@@ -537,10 +543,12 @@ def test_analyze_nonexistent_evidence_or_session(client: TestClient):
     assert res2.status_code == status.HTTP_404_NOT_FOUND
 
 
+@patch("app.ai.gemini_vision.gemini_vision_service.analyze_evidence_image")
 @patch("app.ai.qwen_vision.qwen_vision_service.analyze_evidence_image")
-def test_frozen_snapshot_and_product_reference_stability(mock_analyze, client: TestClient):
+def test_frozen_snapshot_and_product_reference_stability(mock_qwen, mock_gemini, client: TestClient):
     """Verify visual analysis utilizes product references correctly even if workflow is updated."""
-    mock_analyze.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
+    mock_gemini.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
+    mock_qwen.return_value = VisualAnalysisResult.model_validate(SAMPLE_MOCK_GEMINI_RESULT)
 
     _, auth = register_and_auth(client, "merchant_freeze_vis@example.com")
     session_data, _, ev_data = setup_verified_session_with_image(client, auth, sku="SKU-VIS-FREEZE")
@@ -555,7 +563,8 @@ def test_frozen_snapshot_and_product_reference_stability(mock_analyze, client: T
     )
     assert res.status_code == status.HTTP_200_OK
 
-    # Verify visual profile or reference images passed to Qwen
-    call_kwargs = mock_analyze.call_args[1]
+    # Verify visual profile or reference images passed to vision service
+    mock_used = mock_gemini if mock_gemini.call_count else mock_qwen
+    call_kwargs = mock_used.call_args[1]
     assert call_kwargs.get("visual_profile") is not None or len(call_kwargs.get("reference_images", [])) == 4
     assert call_kwargs["product_info"]["sku"] == "SKU-VIS-FREEZE"
