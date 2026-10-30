@@ -1597,7 +1597,13 @@ def run_session_fusion(
     requests = list(session.evidence_requests or [])
     references = list(session.product.references or []) if session.product else []
 
-    return perform_evidence_fusion(
+    import time
+    start_fusion_t = time.time()
+    v_id = session.verification_id
+
+    logger.info("AI_TRACE | FUSION_START | verification_id=%s", v_id)
+
+    res = perform_evidence_fusion(
         db=db,
         session=session,
         evidence_items=evidence_items,
@@ -1606,6 +1612,12 @@ def run_session_fusion(
         evidence_requests=requests,
         references=references,
     )
+
+    dur_ms = int((time.time() - start_fusion_t) * 1000)
+    logger.info("AI_TRACE | FUSION_COMPLETE | verification_id=%s | duration_ms=%d | status=%s", v_id, dur_ms, res.assessment_state)
+    logger.info("AI_TRACE | AI_PIPELINE_COMPLETE | verification_id=%s | assessment_state=%s", v_id, res.assessment_state)
+
+    return res
 
 
 def list_session_fusions(

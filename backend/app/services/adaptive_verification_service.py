@@ -299,36 +299,22 @@ async def handle_customer_fulfillment(
     # 4. Mark request as FULFILLED
     fulfilled_req = evidence_request_service.fulfill_request(db, evidence_req)
 
-    # 5. Automatically trigger Gemini Vision analysis (only for image evidence)
+    # 5. Enqueue background AI job for asynchronous serialized inference
+    from app.ai.ai_queue import ai_job_queue, AIJob, JobType
     if evidence.evidence_type == "CUSTOMER_IMAGE":
-        try:
-            from app.services import evidence_processing_service
-            evidence_processing_service.analyze_evidence_image(
-                db=db,
-                merchant_id=session.merchant_id,
-                verification_identifier=session.id,
-                evidence_identifier=evidence.id,
-                force_reanalyze=True,
+        ai_job_queue.enqueue(
+            AIJob(
+                job_type=JobType.CUSTOMER_VISUAL_ANALYSIS,
+                evidence_id=evidence.id,
+                verification_id=session.id,
             )
-        except Exception as exc:
-            logger.warning(
-                "Automated visual analysis during adaptive fulfillment failed gracefully: %s",
-                exc,
-            )
-
-    # 6. Automatically trigger Llama reasoning cycle (fail-safe)
-    reasoning_run = None
-    try:
-        run, _ = run_adaptive_reasoning_cycle(
-            db=db,
-            merchant_id=session.merchant_id,
-            verification_identifier=session.id,
         )
-        reasoning_run = run
-    except Exception as exc:
-        logger.warning(
-            "Automated adaptive reasoning cycle during fulfillment failed gracefully: %s",
-            exc,
+    else:
+        ai_job_queue.enqueue(
+            AIJob(
+                job_type=JobType.LLAMA_REASONING,
+                verification_id=session.id,
+            )
         )
 
-    return fulfilled_req, evidence, reasoning_run
+    return fulfilled_req, evidence, None

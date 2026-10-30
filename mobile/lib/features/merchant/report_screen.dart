@@ -6,6 +6,7 @@ import '../../shared/widgets/assessment_badge.dart';
 import '../../shared/widgets/decision_badge.dart';
 import '../../shared/widgets/section_card.dart';
 import '../../shared/widgets/status_badge.dart';
+import '../../shared/widgets/merchant_header.dart';
 import '../../state/merchant_dashboard_provider.dart';
 import 'decision_dialog.dart';
 
@@ -169,7 +170,8 @@ class _ReportScreenState extends State<ReportScreen> {
 
     if (provider.isLoadingDetail || report == null) {
       return Scaffold(
-        appBar: AppBar(
+        appBar: MerchantHeader(
+          title: 'Explainable Final Report',
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
             tooltip: 'Back',
@@ -181,14 +183,14 @@ class _ReportScreenState extends State<ReportScreen> {
               }
             },
           ),
-          title: const Text('Explainable Final Report'),
         ),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: MerchantHeader(
+        title: 'Verification Report',
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           tooltip: 'Back to Investigation',
@@ -200,7 +202,6 @@ class _ReportScreenState extends State<ReportScreen> {
             }
           },
         ),
-        title: const Text('Verification Report'),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),

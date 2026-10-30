@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -47,8 +47,18 @@ class ProductResponse(BaseModel):
     description: Optional[str] = None
     price: Decimal
     reference_processing_status: str = "NOT_READY"
+    reference_count: int = 0
+    reference_angles_count: int = 0
+    is_ready: bool = False
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("reference_processing_status", mode="before")
+    @classmethod
+    def default_status_if_none(cls, v: Any) -> str:
+        if not v:
+            return "NOT_READY"
+        return str(v)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -69,9 +79,11 @@ class ProductReferenceResponse(BaseModel):
 
 
 class ProductReferenceStatusResponse(BaseModel):
-    """Status report on the four canonical reference angles for a product."""
+    """Status report on the four canonical reference angles and AI processing for a product."""
     product_id: str
     reference_status: Dict[str, bool]
+    reference_processing_status: str = "NOT_READY"
+    angle_analysis_status: Dict[str, str] = Field(default_factory=dict)
     complete: bool
     is_complete: bool = False
     existing_count: int = 0

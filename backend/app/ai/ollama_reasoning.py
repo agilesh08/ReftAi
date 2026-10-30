@@ -273,6 +273,7 @@ class OllamaReasoningService:
             "messages": messages,
             "format": ReasoningResult.model_json_schema(),
             "stream": False,
+            "keep_alive": "5m",
             "options": {
                 "temperature": 0.1,
             },
@@ -451,6 +452,7 @@ class OllamaReasoningService:
             ],
             "format": ProductVisualProfileResult.model_json_schema(),
             "stream": False,
+            "keep_alive": "5m",
             "options": {
                 "temperature": 0.1,
             },

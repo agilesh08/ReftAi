@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/constants/app_colors.dart';
 import '../../services/merchant_service.dart';
+import '../../shared/widgets/merchant_header.dart';
 
 /// Configurable refund scenario model.
 class BuilderScenario {
@@ -314,7 +315,8 @@ class _WorkflowBuilderScreenState extends State<WorkflowBuilderScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: MerchantHeader(
+        title: 'Build Refund Verification',
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           tooltip: 'Back to Dashboard',
@@ -326,7 +328,6 @@ class _WorkflowBuilderScreenState extends State<WorkflowBuilderScreen> {
             }
           },
         ),
-        title: const Text('Build Refund Verification'),
         actions: [
           IconButton(
             icon: const Icon(Icons.check_rounded),

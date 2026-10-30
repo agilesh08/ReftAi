@@ -26,19 +26,28 @@ Reft.AI is an intelligent, local AI-powered evidence verification platform desig
 ## 📁 Repository Structure
 
 ```
-├── backend/                  # FastAPI Backend Application
+├── backend/                  # FastAPI Backend Application (Python 3.10+)
 │   ├── app/                  # Application Core & Business Logic
-│   │   ├── ai/               # Local Ollama AI Services (Qwen2.5-VL, Llama 3.2, AI Queue)
-│   │   ├── api/              # FastAPI Router & Endpoint Controllers
-│   │   ├── core/             # Database (SQLite WAL), Config, Security (JWT)
+│   │   ├── ai/               # AI Engines: Gemini Vision & Local Ollama (Qwen2.5-VL, Llama 3.2, AI Queue)
+│   │   ├── api/              # FastAPI Routers & Endpoint Controllers
+│   │   ├── core/             # Database (SQLite WAL Mode), Config, Security (JWT)
 │   │   ├── models/           # SQLAlchemy Database ORM Models
 │   │   ├── schemas/          # Pydantic Schemas & DTOs
-│   │   └── services/         # Business Logic & Workflow Engine
-│   ├── scripts/              # Verification & Diagnostic Utilities
-│   ├── tests/                # Pytest Unit & Integration Test Suite
+│   │   └── services/         # Business Logic, Profile Consolidation, Verification Engine
+│   ├── scripts/              # Database Seeding & Verification Utilities
+│   ├── tests/                # Comprehensive Pytest Test Suite (303 tests)
 │   └── requirements.txt      # Python Dependencies
-├── mobile/                   # Flutter Mobile Client Application
-│   ├── lib/                  # Flutter Screens, Widgets, Services & Core Architecture
+├── web/                      # React.js Web Frontend (Vite, React 18, Tailwind-style CSS)
+│   ├── src/
+│   │   ├── components/       # Common, Merchant, and Customer UI Components
+│   │   ├── context/          # AuthContext, MerchantContext, CustomerFlowContext
+│   │   ├── pages/            # Merchant Dashboard, New Session, Reports, Settings, Customer Portal
+│   │   ├── routes/           # Protected Routes & ErrorBoundary Wrapping
+│   │   └── services/         # Axios/Fetch API Services for all backend endpoints
+│   ├── package.json          # Node.js Dependencies
+│   └── vite.config.js        # Vite Build Configuration
+├── mobile/                   # Flutter Mobile Client Application (Android / iOS)
+│   ├── lib/                  # Screens, Widgets, Services & Core Architecture
 │   │   ├── core/             # Colors, Theme, Network API Client
 │   │   ├── features/         # Merchant & Customer Verification Flows
 │   │   └── services/         # Merchant & Customer HTTP API Services
@@ -52,8 +61,9 @@ Reft.AI is an intelligent, local AI-powered evidence verification platform desig
 
 ### Prerequisites
 1. **Python 3.10+**
-2. **Flutter SDK 3.x**
-3. **Ollama** installed locally with the following models:
+2. **Node.js 18+ & npm**
+3. **Flutter SDK 3.x** (optional, for mobile)
+4. **Ollama** installed locally (or Google Gemini API Key):
    ```bash
    ollama pull qwen2.5vl:3b-q4_K_M
    ollama pull llama3.2:1b
@@ -61,7 +71,7 @@ Reft.AI is an intelligent, local AI-powered evidence verification platform desig
 
 ---
 
-### Backend Setup
+### 1. Backend Setup
 
 1. **Navigate to the backend folder**:
    ```bash
@@ -82,20 +92,51 @@ Reft.AI is an intelligent, local AI-powered evidence verification platform desig
    pip install -r requirements.txt
    ```
 
-4. **Start the FastAPI Server**:
+4. **Configure Environment**:
+   ```bash
+   cp .env.example .env
+   # Add your optional GEMINI_API_KEY or configure local Ollama URL
+   ```
+
+5. **Start the FastAPI Server**:
    ```bash
    python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
    ```
-   *The server will initialize SQLite database schemas, enable WAL mode, and warm up Qwen2.5-VL 3B & Llama 3.2 1B models.*
+   *The server initializes SQLite database schemas, enables WAL mode, and verifies AI pipelines.*
 
-5. **Run Test Suite**:
+6. **Run Test Suite**:
    ```bash
    python -m pytest tests/ -q
    ```
 
 ---
 
-### Mobile App Setup
+### 2. Web Frontend Setup
+
+1. **Navigate to the web folder**:
+   ```bash
+   cd web
+   ```
+
+2. **Install Node Dependencies**:
+   ```bash
+   npm install
+   ```
+
+3. **Start Development Server**:
+   ```bash
+   npm run dev
+   ```
+   *The web application will be available at `http://localhost:5173`.*
+
+4. **Build Production Bundle**:
+   ```bash
+   npm run build
+   ```
+
+---
+
+### 3. Mobile App Setup
 
 1. **Navigate to the mobile folder**:
    ```bash

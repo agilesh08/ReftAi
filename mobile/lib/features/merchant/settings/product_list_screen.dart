@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../services/merchant_service.dart';
+import '../../../shared/widgets/merchant_header.dart';
 
 /// Screen displaying merchant products with trusted reference evidence status.
 class ProductListScreen extends StatefulWidget {
@@ -216,8 +217,9 @@ class _ProductListScreenState extends State<ProductListScreen> {
                 ? (4 - (comp['missing_angles'] as List).length).clamp(0, 4)
                 : 0));
     final requiredCount = comp['required_count'] ?? 4;
+    final procStatus = (comp['reference_processing_status']?.toString() ?? 'NOT_READY').toUpperCase();
 
-    if (isComplete) {
+    if (procStatus == 'READY' || (isComplete && procStatus == 'READY')) {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
@@ -233,11 +235,67 @@ class _ProductListScreenState extends State<ProductListScreen> {
                 size: 13, color: AppColors.assessmentConsistent),
             SizedBox(width: 4),
             Text(
-              'Trusted Evidence Complete (4/4)',
+              '✓ Trusted Evidence Ready (4/4 analyzed)',
               style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w700,
                 color: AppColors.assessmentConsistent,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (procStatus == 'PROCESSING') {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: AppColors.primaryLight,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+              color: AppColors.primary.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.hourglass_top_rounded,
+                size: 13, color: AppColors.primary),
+            const SizedBox(width: 4),
+            Text(
+              '⏳ Reference Analysis in Progress ($count/$requiredCount analyzed)',
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppColors.primary,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (procStatus == 'FAILED') {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: AppColors.assessmentInconsistentBg,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+              color: AppColors.assessmentInconsistent.withValues(alpha: 0.3)),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline_rounded,
+                size: 13, color: AppColors.assessmentInconsistent),
+            SizedBox(width: 4),
+            Text(
+              '⚠ Reference Analysis Failed (Retry)',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppColors.assessmentInconsistent,
               ),
             ),
           ],
@@ -326,7 +384,8 @@ class _ProductListScreenState extends State<ProductListScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: MerchantHeader(
+        title: 'Trusted Product Evidence',
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           tooltip: 'Back to Settings',
@@ -338,7 +397,6 @@ class _ProductListScreenState extends State<ProductListScreen> {
             }
           },
         ),
-        title: const Text('Trusted Product Evidence'),
         actions: [
           IconButton(
             icon: const Icon(Icons.add_rounded),

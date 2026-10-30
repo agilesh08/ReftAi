@@ -48,6 +48,35 @@ def register_and_auth(client: TestClient, email: str, name: str = "Test Store") 
     return merchant_id, f"Bearer {token}"
 
 
+def _force_product_ready(product_id: str):
+    """Force READY status for product so verification session creation passes gating."""
+    from tests.conftest import TestingSessionLocal
+    db_t = TestingSessionLocal()
+    try:
+        from app.models.product import Product
+        from app.models.product_visual_profile import ProductVisualProfile, ProductVisualProfileStatus
+        prod = db_t.execute(select(Product).where(Product.id == product_id)).scalar_one()
+        prod.reference_processing_status = "READY"
+        prof = db_t.execute(select(ProductVisualProfile).where(ProductVisualProfile.product_id == product_id)).scalar_one_or_none()
+        if not prof:
+            prof = ProductVisualProfile(
+                product_id=product_id,
+                qwen_model_name="qwen2.5vl:3b-q4_K_M",
+                llama_model_name="llama3.2:1b",
+                profile_version="v1.0-profile",
+                reference_hashes_json={},
+                status=ProductVisualProfileStatus.READY.value,
+                profile_json={"mock": "profile"},
+            )
+            db_t.add(prof)
+        else:
+            prof.status = ProductVisualProfileStatus.READY.value
+            prof.profile_json = {"mock": "profile"}
+        db_t.commit()
+    finally:
+        db_t.close()
+
+
 def setup_verified_session(
     client: TestClient,
     auth: str,
@@ -70,6 +99,8 @@ def setup_verified_session(
             data={"angle": angle},
             files={"image": (f"{angle.lower()}.jpg", make_test_image(), "image/jpeg")},
         )
+
+    _force_product_ready(prod_id)
 
     # 2. Workflow with IMAGE, TEXT, and optional VIDEO step
     wf_res = client.post(

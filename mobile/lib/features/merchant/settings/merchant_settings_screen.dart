@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../shared/widgets/merchant_header.dart';
 
 /// Dedicated Merchant Settings screen with structured navigation cards.
 class MerchantSettingsScreen extends StatelessWidget {
@@ -145,7 +146,8 @@ class MerchantSettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: MerchantHeader(
+        title: 'Merchant Settings',
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           tooltip: 'Back to Dashboard',
@@ -157,7 +159,6 @@ class MerchantSettingsScreen extends StatelessWidget {
             }
           },
         ),
-        title: const Text('Merchant Settings'),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),

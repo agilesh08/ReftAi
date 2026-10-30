@@ -188,22 +188,18 @@ def list_dashboard_verifications(
     items: List[DashboardVerificationItem] = []
     now = utc_now()
     for sess, prod_name, assess_state, conf in rows:
-        # Check lazy hold expiry
+        # Check lazy hold expiry in memory for display without mutating DB during GET
+        eff_status = sess.status
         if (
             sess.status == SessionStatus.HELD.value
             and sess.hold_until is not None
             and sess.hold_until <= now
         ):
-            restored = (
+            eff_status = (
                 SessionStatus.COMPLETED.value
                 if sess.completed_at
                 else (SessionStatus.IN_PROGRESS.value if sess.started_at else SessionStatus.CREATED.value)
             )
-            sess.status = restored
-            sess.held_at = None
-            sess.hold_until = None
-            sess.held_by = None
-            db.commit()
 
         updated_at = sess.completed_at or sess.started_at or sess.created_at
         latest_dec = None
@@ -223,7 +219,7 @@ def list_dashboard_verifications(
                 order_id=sess.order_id,
                 product_name=prod_name,
                 refund_amount=float(sess.refund_amount) if sess.refund_amount is not None else None,
-                status=sess.status,
+                status=eff_status,
                 customer_id=sess.customer_id,
                 customer_email=sess.customer_email,
                 assessment_state=assess_state,

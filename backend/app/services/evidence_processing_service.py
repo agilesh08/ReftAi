@@ -75,6 +75,27 @@ def process_evidence(db: Session, evidence_identifier: str) -> EvidenceProcessPl
     )
 
 
+def process_evidence_visual_analysis(db: Session, evidence_id: str) -> Optional[VisualAnalysis]:
+    """Background worker function for asynchronous customer visual evidence analysis."""
+    ev = db.execute(
+        select(Evidence).where(
+            or_(Evidence.id == evidence_id, Evidence.evidence_id == evidence_id)
+        )
+    ).scalar_one_or_none()
+    if not ev or ev.evidence_type != EvidenceType.CUSTOMER_IMAGE.value:
+        return None
+    session = db.get(VerificationSession, ev.verification_session_id)
+    if not session:
+        return None
+    return analyze_evidence_image(
+        db=db,
+        merchant_id=session.merchant_id,
+        verification_identifier=session.id,
+        evidence_identifier=ev.id,
+        force_reanalyze=True,
+    )
+
+
 def analyze_evidence_image(
     db: Session,
     merchant_id: str,
@@ -172,25 +193,8 @@ def analyze_evidence_image(
     ).scalar_one_or_none()
     profile_dict = profile.profile_json if (profile and profile.status == ProductVisualProfileStatus.READY.value) else None
 
-    # Optionally pass max 1 FRONT reference image if available for fallback visual comparison
-    product_refs = db.execute(
-        select(ProductReference).where(ProductReference.product_id == session.product_id)
-    ).scalars().all()
-
+    # Customer stage receives 1 customer image + stored text ProductVisualProfile (no raw reference images)
     reference_images_payload: List[Dict[str, Any]] = []
-    if product_refs:
-        front_ref = next((r for r in product_refs if r.angle == "FRONT"), product_refs[0])
-        try:
-            ref_file_path = get_reference_file_path(front_ref.image_path)
-            ref_bytes = ref_file_path.read_bytes()
-            ref_mime = guess_image_mime(front_ref.image_path)
-            reference_images_payload.append({
-                "angle": front_ref.angle,
-                "bytes": ref_bytes,
-                "mime_type": ref_mime,
-            })
-        except Exception as exc:
-            logger.warning("Could not read front reference file: %s", exc)
 
     # 7. Prepare product info and claim context
     product_info = {}
@@ -220,28 +224,95 @@ def analyze_evidence_image(
     db.commit()
     db.refresh(analysis)
 
-    # 9. Invoke local Qwen2.5-VL Vision service with 1 customer image + visual profile
+    analysis_db_id = analysis.id
+    evidence_db_id = evidence.id
+    v_id = session.verification_id
+    ev_human_id = evidence.evidence_id
+    p_id = session.product_id
+
+    import time
+    start_qwen_t = time.time()
+
+    logger.info("AI_TRACE | AI_PIPELINE_START | verification_id=%s | evidence_id=%s | product_id=%s", v_id, ev_human_id, p_id)
+    logger.info("AI_TRACE | QWEN_START | verification_id=%s | evidence_id=%s | model=%s", v_id, ev_human_id, qwen_vision_service.model_name)
+
+    # Commit active transaction to release SQLite DB lock during network call
+    db.commit()
+
+    # 9. Invoke Gemini Vision (if configured) or local Qwen2.5-VL Vision service
     try:
-        result: VisualAnalysisResult = qwen_vision_service.analyze_evidence_image(
-            evidence_bytes=evidence_bytes,
-            evidence_mime_type=evidence_mime,
-            reference_images=reference_images_payload,
-            product_info=product_info,
-            claim_context=claim_context,
-            visual_profile=profile_dict,
+        result: Optional[VisualAnalysisResult] = None
+        used_model = qwen_vision_service.model_name
+
+        if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY.strip():
+            try:
+                from app.ai.gemini_vision import gemini_vision_service
+                logger.info("AI_TRACE | GEMINI_START | verification_id=%s | evidence_id=%s | model=%s", v_id, ev_human_id, gemini_vision_service.model_name)
+                # Fetch actual reference image bytes for Gemini multimodal comparison
+                refs = db.execute(
+                    select(ProductReference).where(ProductReference.product_id == session.product_id)
+                ).scalars().all()
+                gemini_refs = []
+                for r in refs:
+                    try:
+                        p = get_reference_file_path(r.image_path)
+                        gemini_refs.append({
+                            "angle": r.angle,
+                            "bytes": p.read_bytes(),
+                            "mime_type": guess_image_mime(r.image_path),
+                        })
+                    except Exception as err:
+                        logger.warning("Could not load reference file for angle %s: %s", r.angle, err)
+
+                result = gemini_vision_service.analyze_evidence_image(
+                    evidence_bytes=evidence_bytes,
+                    evidence_mime_type=evidence_mime,
+                    reference_images=gemini_refs,
+                    product_info=product_info,
+                    claim_context=claim_context,
+                )
+                used_model = gemini_vision_service.model_name
+                logger.info("AI_TRACE | GEMINI_SUCCESS | verification_id=%s | evidence_id=%s", v_id, ev_human_id)
+            except Exception as gem_exc:
+                logger.warning("Gemini Vision customer evidence analysis failed (%s); falling back to Qwen2.5-VL", gem_exc)
+                result = None
+
+        if result is None:
+            result = qwen_vision_service.analyze_evidence_image(
+                evidence_bytes=evidence_bytes,
+                evidence_mime_type=evidence_mime,
+                reference_images=reference_images_payload,
+                product_info=product_info,
+                claim_context=claim_context,
+                visual_profile=profile_dict,
+            )
+            used_model = qwen_vision_service.model_name
+
+        dur_ms = int((time.time() - start_qwen_t) * 1000)
+        logger.info(
+            "AI_TRACE | QWEN_COMPLETE | verification_id=%s | evidence_id=%s | model=%s | duration_ms=%d | status=COMPLETED",
+            v_id, ev_human_id, qwen_vision_service.model_name, dur_ms
         )
 
-        analysis.result_json = result.model_dump()
-        analysis.overall_confidence = result.overall_visual_confidence
-        analysis.status = VisualAnalysisStatus.COMPLETED.value
-        analysis.completed_at = utc_now()
+        analysis_rec = db.execute(
+            select(VisualAnalysis).where(VisualAnalysis.id == analysis_db_id)
+        ).scalar_one()
+        evidence_rec = db.execute(
+            select(Evidence).where(Evidence.id == evidence_db_id)
+        ).scalar_one()
+
+        analysis_rec.result_json = result.model_dump()
+        analysis_rec.overall_confidence = result.overall_visual_confidence
+        analysis_rec.model_name = used_model
+        analysis_rec.status = VisualAnalysisStatus.COMPLETED.value
+        analysis_rec.completed_at = utc_now()
 
         # Update evidence status to ANALYZED
-        evidence.status = EvidenceStatus.ANALYZED.value
+        evidence_rec.status = EvidenceStatus.ANALYZED.value
 
         # Log audit event
         event = EvidenceEvent(
-            evidence_id=evidence.id,
+            evidence_id=evidence_rec.id,
             verification_session_id=session.id,
             event_type="AI_VISUAL_ANALYSIS_COMPLETED",
             event_data_json={
@@ -252,42 +323,42 @@ def analyze_evidence_image(
         )
         db.add(event)
         db.commit()
-        db.refresh(analysis)
+        db.refresh(analysis_rec)
 
-        logger.info(
-            "Visual analysis %s completed successfully for evidence %s",
-            analysis.id,
-            evidence.evidence_id,
-        )
-        return analysis
+        logger.info("AI_TRACE | QWEN_RESULT_SAVED | verification_id=%s | evidence_id=%s", v_id, ev_human_id)
+        return analysis_rec
 
     except Exception as exc:
+        db.rollback()
+        dur_ms = int((time.time() - start_qwen_t) * 1000)
         logger.error(
-            "Visual analysis failed for evidence %s: %s",
-            evidence.evidence_id,
-            exc,
+            "AI_TRACE | QWEN_COMPLETE | verification_id=%s | evidence_id=%s | model=%s | duration_ms=%d | status=FAILED | error=%s",
+            v_id, ev_human_id, qwen_vision_service.model_name, dur_ms, exc,
             exc_info=True,
         )
-        analysis.status = VisualAnalysisStatus.FAILED.value
-        analysis.error_message = str(exc)
-        analysis.completed_at = utc_now()
+        analysis_rec = db.execute(
+            select(VisualAnalysis).where(VisualAnalysis.id == analysis_db_id)
+        ).scalar_one_or_none()
+        if analysis_rec:
+            analysis_rec.status = VisualAnalysisStatus.FAILED.value
+            analysis_rec.error_message = str(exc)
+            analysis_rec.completed_at = utc_now()
 
-        # Customer evidence remains READY_FOR_ANALYSIS (never accuse customer or fail claim due to AI failure)
-        event = EvidenceEvent(
-            evidence_id=evidence.id,
-            verification_session_id=session.id,
-            event_type="AI_VISUAL_ANALYSIS_FAILED",
-            event_data_json={
-                "actor": "SYSTEM_QWEN_VISION",
-                "note": f"Qwen visual analysis failed: {str(exc)[:200]}",
-                "error": str(exc)[:500],
-            },
-        )
-        db.add(event)
-        db.commit()
-        db.refresh(analysis)
-
-        return analysis
+            event = EvidenceEvent(
+                evidence_id=evidence_db_id,
+                verification_session_id=session.id,
+                event_type="AI_VISUAL_ANALYSIS_FAILED",
+                event_data_json={
+                    "actor": "SYSTEM_QWEN_VISION",
+                    "note": f"Qwen visual analysis failed: {str(exc)[:200]}",
+                    "error": str(exc)[:500],
+                },
+            )
+            db.add(event)
+            db.commit()
+            db.refresh(analysis_rec)
+            return analysis_rec
+        raise
 
 
 def get_evidence_analysis(

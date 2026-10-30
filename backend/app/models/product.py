@@ -75,6 +75,38 @@ class Product(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    visual_profile = relationship(
+        "ProductVisualProfile",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
+    reference_analyses = relationship(
+        "ProductReferenceVisualAnalysis",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    @property
+    def reference_count(self) -> int:
+        """Count of uploaded reference images."""
+        return len(self.references) if self.references else 0
+
+    @property
+    def reference_angles_count(self) -> int:
+        """Alias for reference_count matching frontend expectation."""
+        return self.reference_count
+
+    @property
+    def is_ready(self) -> bool:
+        """Strict readiness: 4 canonical angles + READY status + READY visual profile."""
+        return (
+            self.reference_processing_status == "READY"
+            and self.reference_count >= 4
+            and bool(self.visual_profile and getattr(self.visual_profile, "status", None) == "READY")
+        )
 
     def __repr__(self) -> str:
         return f"<Product id={self.id} sku={self.sku} name={self.name} merchant_id={self.merchant_id}>"

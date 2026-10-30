@@ -555,9 +555,7 @@ def test_frozen_snapshot_and_product_reference_stability(mock_analyze, client: T
     )
     assert res.status_code == status.HTTP_200_OK
 
-    # Verify references passed to Gemini were 4 angles
+    # Verify visual profile or reference images passed to Qwen
     call_kwargs = mock_analyze.call_args[1]
-    assert len(call_kwargs["reference_images"]) == 4
-    angles = [ref["angle"] for ref in call_kwargs["reference_images"]]
-    assert set(angles) == {"FRONT", "BACK", "LEFT", "RIGHT"}
+    assert call_kwargs.get("visual_profile") is not None or len(call_kwargs.get("reference_images", [])) == 4
     assert call_kwargs["product_info"]["sku"] == "SKU-VIS-FREEZE"

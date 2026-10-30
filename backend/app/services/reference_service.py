@@ -46,7 +46,17 @@ async def upload_reference_image(
     # 2. Validate and normalize the reference angle
     norm_angle = _normalize_and_validate_angle(angle)
 
-    # 3. Check for existing reference for this angle (strict replacement policy)
+    # 3. Read, validate image format and decode via Pillow
+    file_bytes, extension = await validate_and_read_image(image_file)
+
+    # 4. Compute SHA-256 cryptographic hash
+    image_hash = calculate_sha256(file_bytes)
+
+    # 5. Generate collision-free filename and save to storage
+    filename = generate_safe_filename(product.id, norm_angle, extension)
+    relative_path = save_reference_file(file_bytes, filename)
+
+    # 6. Check for existing reference for this angle (clean replacement policy)
     existing_ref = db.execute(
         select(ProductReference).where(
             ProductReference.product_id == product.id,
@@ -55,34 +65,25 @@ async def upload_reference_image(
     ).scalar_one_or_none()
 
     if existing_ref:
-        logger.warning(
-            "Conflict: Reference for angle %s already exists on product %s",
+        logger.info(
+            "Replacing existing %s reference for product %s (removing old file: %s)",
             norm_angle,
             product.id,
+            existing_ref.image_path,
         )
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"A {norm_angle} reference already exists. Delete it before uploading a replacement.",
+        delete_reference_file(existing_ref.image_path)
+        existing_ref.image_path = relative_path
+        existing_ref.image_hash = image_hash
+        reference = existing_ref
+    else:
+        reference = ProductReference(
+            product_id=product.id,
+            angle=norm_angle,
+            image_path=relative_path,
+            image_hash=image_hash,
         )
+        db.add(reference)
 
-    # 4. Read, validate image format and decode via Pillow
-    file_bytes, extension = await validate_and_read_image(image_file)
-
-    # 5. Compute SHA-256 cryptographic hash
-    image_hash = calculate_sha256(file_bytes)
-
-    # 6. Generate collision-free filename and save to storage
-    filename = generate_safe_filename(product.id, norm_angle, extension)
-    relative_path = save_reference_file(file_bytes, filename)
-
-    # 7. Create and persist database record
-    reference = ProductReference(
-        product_id=product.id,
-        angle=norm_angle,
-        image_path=relative_path,
-        image_hash=image_hash,
-    )
-    db.add(reference)
     product.reference_processing_status = "PROCESSING"
     db.commit()
     db.refresh(reference)

@@ -86,7 +86,7 @@ class ProductVisualProfile(Base):
     )
 
     # Relationship
-    product = relationship("Product", backref="visual_profile", uselist=False)
+    product = relationship("Product", back_populates="visual_profile")
 
     def __repr__(self) -> str:
         return f"<ProductVisualProfile id={self.id} product_id={self.product_id} status={self.status}>"

@@ -19,6 +19,7 @@ from app.core.security import (
 from app.models.merchant import Merchant
 from app.models.product import Product
 from app.models.product_reference import ProductReference, ReferenceAngle
+from app.models.product_visual_profile import ProductVisualProfile, ProductVisualProfileStatus
 from app.models.verification import SessionStatus, VerificationSession
 from app.models.verification_event import VerificationEvent, VerificationEventType
 from app.models.workflow import Workflow, WorkflowStatus
@@ -108,6 +109,33 @@ def seed_merchant():
                 )
                 db.add(ref)
                 db.commit()
+
+        # Consolidate and mark Product Visual Profile as READY
+        profile = db.query(ProductVisualProfile).filter(ProductVisualProfile.product_id == product.id).first()
+        if not profile:
+            profile = ProductVisualProfile(
+                product_id=product.id,
+                qwen_model_name="qwen2.5vl:3b-q4_K_M",
+                llama_model_name="llama3.2:1b",
+                profile_version="v1",
+                status=ProductVisualProfileStatus.READY.value,
+                reference_hashes_json={angle: "hash_" + angle for angle in angle_colors.keys()},
+                profile_json={
+                    "product_name": product.name,
+                    "sku": product.sku,
+                    "canonical_angles": ["FRONT", "BACK", "LEFT", "RIGHT"],
+                    "physical_geometry": "Over-ear wireless headphones with cushioned earcups and adjustable padded headband",
+                    "color_specification": "Matte dark neutral with metallic accents",
+                    "branding_elements": ["Embossed logo on outer earcups", "L/R indicators inside headband"]
+                }
+            )
+            db.add(profile)
+        else:
+            profile.status = ProductVisualProfileStatus.READY.value
+        
+        product.reference_processing_status = "READY"
+        db.commit()
+        print(f"[+] Product {product.name} visual profile consolidated and marked READY")
 
         # 4. Workflow
         workflow_name = "Standard Refund Verification"

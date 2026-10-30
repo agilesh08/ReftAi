@@ -65,6 +65,12 @@ class ProductReference(Base):
 
     # Relationships
     product = relationship("Product", back_populates="references")
+    analyses = relationship(
+        "ProductReferenceVisualAnalysis",
+        back_populates="product_reference",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     def __repr__(self) -> str:
         return f"<ProductReference id={self.id} product_id={self.product_id} angle={self.angle}>"

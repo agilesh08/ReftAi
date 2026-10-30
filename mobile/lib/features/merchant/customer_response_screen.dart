@@ -10,6 +10,7 @@ import '../../models/report_models.dart';
 import '../../shared/widgets/assessment_badge.dart';
 import '../../shared/widgets/decision_badge.dart';
 import '../../shared/widgets/status_badge.dart';
+import '../../shared/widgets/merchant_header.dart';
 import '../../state/merchant_dashboard_provider.dart';
 
 /// Dedicated Read-Only Merchant View of the Complete Customer Verification Journey.
@@ -90,14 +91,12 @@ class _CustomerResponseScreenState extends State<CustomerResponseScreen>
 
         return Scaffold(
           backgroundColor: AppColors.background,
-          appBar: AppBar(
-            backgroundColor: Colors.white,
-            elevation: 0.5,
+          appBar: MerchantHeader(
             leading: IconButton(
               icon: const Icon(Icons.arrow_back, color: AppColors.darkNeutral),
               onPressed: () => context.pop(),
             ),
-            title: Column(
+            titleWidget: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(

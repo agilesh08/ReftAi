@@ -341,16 +341,21 @@ class _ReviewingScreenState extends State<ReviewingScreen>
         );
       }
 
-      // Finalize session completion after follow-up
-      await provider.finalizeCompletion();
+      // Reset local follow-up input state
+      _followUpImageBytes = null;
+      _followUpFilename = null;
+      _selectedMcqOption = null;
+      _followUpTextController.clear();
+      _activeRequest = null;
 
+      // Transition UI to processing mode and re-trigger pipeline to poll background analysis
       if (mounted) {
-        final safeToken = _getSafeToken(provider);
-        if (safeToken.isNotEmpty) {
-          context.go('/verify/$safeToken/completed');
-        } else {
-          context.go('/');
-        }
+        setState(() {
+          _isSubmittingFollowUp = false;
+          _needsFollowUp = false;
+          _analysisStarted = false;
+        });
+        _runAnalysisPipeline();
       }
     } catch (e) {
       if (mounted) {
@@ -359,9 +364,6 @@ class _ReviewingScreenState extends State<ReviewingScreen>
             content: Text(provider.errorMessage ?? 'Submission failed. Please try again.'),
           ),
         );
-      }
-    } finally {
-      if (mounted) {
         setState(() {
           _isSubmittingFollowUp = false;
         });

@@ -90,8 +90,8 @@ class ProductReferenceVisualAnalysis(Base):
     )
 
     # Relationships
-    product = relationship("Product", backref="reference_analyses")
-    product_reference = relationship("ProductReference", backref="analyses")
+    product = relationship("Product", back_populates="reference_analyses")
+    product_reference = relationship("ProductReference", back_populates="analyses")
 
     def __repr__(self) -> str:
         return f"<ProductReferenceVisualAnalysis id={self.id} product_id={self.product_id} angle={self.angle} status={self.status}>"

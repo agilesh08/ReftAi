@@ -73,6 +73,10 @@ class GeminiVisionService:
         self.prompt_version = prompt_version or settings.GEMINI_VISION_PROMPT_VERSION
         self._client: Optional[genai.Client] = None
 
+    def is_available(self) -> bool:
+        """Return True if Gemini API key is configured."""
+        return bool(self.api_key and self.api_key.strip())
+
     @classmethod
     def log_startup_diagnostics(cls) -> None:
         """Log safe startup diagnostics without revealing secrets."""
@@ -262,6 +266,58 @@ class GeminiVisionService:
         result = VisualAnalysisResult.model_validate_json(response.text)
         return result
 
+    def analyze_reference_image(
+        self,
+        image_bytes: bytes,
+        angle: str,
+        product_info: Dict[str, Any],
+        mime_type: str = "image/jpeg",
+    ):
+        """Perform multimodal visual analysis on a single merchant reference angle using Gemini Vision."""
+        from app.schemas.product_reference_analysis import ProductReferenceAnalysisResult
+
+        client = self.get_client()
+
+        prompt = (
+            f"=== GEMINI VISION REFERENCE IMAGE ANALYSIS ({self.prompt_version}) ===\n"
+            f"TASK: Extract comprehensive structured visual metadata from this authentic merchant baseline photo.\n\n"
+            f"--- PRODUCT SPECIFICATION ---\n"
+            f"Name: {product_info.get('name', 'Unknown')}\n"
+            f"SKU: {product_info.get('sku', 'Unknown')}\n"
+            f"Category: {product_info.get('category', 'Unknown')}\n"
+            f"Description: {product_info.get('description', 'None')}\n"
+            f"Canonical Angle: {angle.upper()}\n\n"
+            f"Analyze shape, proportions, primary/secondary colors, materials, distinctive features, buttons/ports, logos, visible text, and condition.\n"
+            f"Return strictly valid JSON adhering to the schema."
+        )
+
+        contents = [
+            prompt,
+            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+        ]
+
+        config = types.GenerateContentConfig(
+            system_instruction=GEMINI_VISION_SYSTEM_INSTRUCTION,
+            temperature=0.1,
+            response_mime_type="application/json",
+            response_schema=ProductReferenceAnalysisResult,
+        )
+
+        try:
+            response = client.models.generate_content(
+                model=self.model_name,
+                contents=contents,
+                config=config,
+            )
+        except Exception as exc:
+            if self._is_auth_error(exc):
+                raise ValueError(f"Gemini authentication failed: {exc}") from exc
+            raise
+
+        if not response.text:
+            raise RuntimeError("Gemini Vision returned empty text response for reference image")
+
+        return ProductReferenceAnalysisResult.model_validate_json(response.text)
 
 
 # Global singleton service instance

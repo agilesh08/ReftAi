@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -5,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../services/merchant_service.dart';
+import '../../../shared/widgets/merchant_header.dart';
 
 /// Screen managing authentic 4-angle trusted reference evidence for a product.
 class ProductReferenceEvidenceScreen extends StatefulWidget {
@@ -23,7 +25,8 @@ class ProductReferenceEvidenceScreen extends StatefulWidget {
 }
 
 class _ProductReferenceEvidenceScreenState
-    extends State<ProductReferenceEvidenceScreen> {
+    extends State<ProductReferenceEvidenceScreen>
+    with SingleTickerProviderStateMixin {
   final MerchantService _merchantService = MerchantService();
   final ImagePicker _picker = ImagePicker();
 
@@ -35,6 +38,10 @@ class _ProductReferenceEvidenceScreenState
   bool _isLoading = true;
   String? _uploadingAngle;
   String? _errorMessage;
+
+  late AnimationController _animController;
+  late Animation<double> _fadeAnimation;
+  Timer? _pollTimer;
 
   static const List<Map<String, String>> _canonicalAngles = [
     {
@@ -63,14 +70,50 @@ class _ProductReferenceEvidenceScreenState
   void initState() {
     super.initState();
     _product = widget.initialProduct;
+
+    _animController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    );
+    _fadeAnimation = Tween<double>(begin: 0.55, end: 1.0).animate(
+      CurvedAnimation(parent: _animController, curve: Curves.easeInOut),
+    );
+
     _loadEvidenceData();
   }
 
-  Future<void> _loadEvidenceData() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    _animController.dispose();
+    super.dispose();
+  }
+
+  void _updatePollingState(String status) {
+    if (status == 'PROCESSING') {
+      if (!_animController.isAnimating) {
+        _animController.repeat(reverse: true);
+      }
+      _pollTimer ??= Timer.periodic(const Duration(seconds: 3), (_) {
+        _loadEvidenceData(isPoll: true);
+      });
+    } else {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+      if (_animController.isAnimating) {
+        _animController.stop();
+        _animController.value = 1.0;
+      }
+    }
+  }
+
+  Future<void> _loadEvidenceData({bool isPoll = false}) async {
+    if (!isPoll) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
+    }
 
     try {
       final futures = await Future.wait([
@@ -86,21 +129,22 @@ class _ProductReferenceEvidenceScreenState
       await Future.wait(
         refs.map((r) async {
           final angle = r['angle']?.toString().toUpperCase();
-          if (angle != null && angle.isNotEmpty) {
+          if (angle != null && angle.isNotEmpty && !_previewBytes.containsKey(angle)) {
             try {
               final bytes = await _merchantService.getReferenceImageBytes(
                 widget.productId,
                 angle,
               );
               bytesMap[angle] = bytes;
-            } catch (_) {
-              // Ignore preview fetch failure, will show placeholder
-            }
+            } catch (_) {}
           }
         }),
       );
 
       if (mounted) {
+        final procStatus = (comp['reference_processing_status']?.toString() ?? 'NOT_READY').toUpperCase();
+        _updatePollingState(procStatus);
+
         setState(() {
           _references = refs;
           _completeness = comp;
@@ -109,7 +153,7 @@ class _ProductReferenceEvidenceScreenState
         });
       }
     } catch (e) {
-      if (mounted) {
+      if (mounted && !isPoll) {
         setState(() {
           _isLoading = false;
           if (e is ApiException) {
@@ -373,14 +417,10 @@ class _ProductReferenceEvidenceScreenState
   }
 
   Widget _buildCompletenessBanner() {
-    final isComplete = _completeness?['complete'] == true ||
-        _completeness?['is_complete'] == true ||
-        _references.length >= 4;
-    final count = isComplete
-        ? 4
-        : (_completeness?['existing_count'] ?? _references.length);
+    final procStatus = _completeness?['reference_processing_status']?.toString().toUpperCase() ?? 'NOT_READY';
+    final existingCount = _completeness?['existing_count'] ?? _references.length;
 
-    if (isComplete) {
+    if (procStatus == 'READY') {
       return Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -399,7 +439,7 @@ class _ProductReferenceEvidenceScreenState
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'READY FOR VISUAL VERIFICATION (4/4 ANGLES)',
+                    '✓ TRUSTED EVIDENCE READY (4/4 ANALYZED)',
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w700,
@@ -408,7 +448,97 @@ class _ProductReferenceEvidenceScreenState
                   ),
                   SizedBox(height: 2),
                   Text(
-                    'All 4 authentic angles (Front, Back, Left, Right) are uploaded. Visual AI will compare customer proof against these baselines.',
+                    'All 4 reference angles analyzed & consolidated into visual profile. Product ready for customer verification.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: AppColors.darkNeutral,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (procStatus == 'PROCESSING') {
+      return FadeTransition(
+        opacity: _fadeAnimation,
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppColors.primaryLight.withValues(alpha: 0.3),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.35)),
+          ),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2.2, color: AppColors.primary),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'REFERENCE ANALYSIS IN PROGRESS ($existingCount/4 UPLOADED)',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    const Text(
+                      'Local Qwen/Llama AI models are analyzing reference angles in background. Verification creation is gated until completion.',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: AppColors.darkNeutral,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (procStatus == 'FAILED') {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.assessmentInconsistentBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+              color: AppColors.assessmentInconsistent.withValues(alpha: 0.35)),
+        ),
+        child: const Row(
+          children: [
+            Icon(Icons.error_outline_rounded,
+                color: AppColors.assessmentInconsistent, size: 24),
+            SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'REFERENCE ANALYSIS FAILED',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.assessmentInconsistent,
+                    ),
+                  ),
+                  SizedBox(height: 2),
+                  Text(
+                    'Visual analysis for one or more reference angles failed. Please retry or replace affected images.',
                     style: TextStyle(
                       fontSize: 11,
                       color: AppColors.darkNeutral,
@@ -440,7 +570,7 @@ class _ProductReferenceEvidenceScreenState
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'TRUSTED EVIDENCE INCOMPLETE ($count/4 ANGLES)',
+                  'TRUSTED EVIDENCE INCOMPLETE ($existingCount/4 ANGLES)',
                   style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
@@ -449,7 +579,7 @@ class _ProductReferenceEvidenceScreenState
                 ),
                 const SizedBox(height: 2),
                 const Text(
-                  'Upload all 4 canonical angles to enable high-confidence automated AI visual verification.',
+                  'Upload all 4 canonical angles to enable automated AI visual verification.',
                   style: TextStyle(
                     fontSize: 11,
                     color: AppColors.darkNeutral,
@@ -472,6 +602,35 @@ class _ProductReferenceEvidenceScreenState
         (r) => r['angle']?.toString().toUpperCase() == angle.toUpperCase());
     final isAngleBusy = _uploadingAngle == angle;
     final bytes = _previewBytes[angle];
+
+    final angleStatus = _completeness?['angle_analysis_status']?[angle]?.toString().toUpperCase() ?? (isUploaded ? 'COMPLETED' : 'MISSING');
+    
+    Color statusBg = Colors.grey.shade100;
+    Color statusColor = AppColors.textMuted;
+    IconData statusIcon = Icons.radio_button_unchecked_rounded;
+    String statusText = 'Missing';
+
+    if (angleStatus == 'COMPLETED') {
+      statusBg = AppColors.assessmentConsistentBg;
+      statusColor = AppColors.assessmentConsistent;
+      statusIcon = Icons.check_circle_rounded;
+      statusText = '✓ Analyzed';
+    } else if (angleStatus == 'PROCESSING') {
+      statusBg = AppColors.primaryLight;
+      statusColor = AppColors.primary;
+      statusIcon = Icons.hourglass_top_rounded;
+      statusText = '⏳ Processing';
+    } else if (angleStatus == 'FAILED') {
+      statusBg = AppColors.assessmentInconsistentBg;
+      statusColor = AppColors.assessmentInconsistent;
+      statusIcon = Icons.cancel_rounded;
+      statusText = '✗ Analysis Failed';
+    } else if (isUploaded) {
+      statusBg = AppColors.assessmentReviewRequiredBg;
+      statusColor = AppColors.assessmentReviewRequired;
+      statusIcon = Icons.query_builder_rounded;
+      statusText = '○ Pending Analysis';
+    }
 
     return Card(
       margin: const EdgeInsets.only(bottom: 14),
@@ -524,32 +683,24 @@ class _ProductReferenceEvidenceScreenState
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: isUploaded
-                        ? AppColors.assessmentConsistentBg
-                        : Colors.grey.shade100,
+                    color: statusBg,
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
-                        isUploaded
-                            ? Icons.check_circle_rounded
-                            : Icons.radio_button_unchecked_rounded,
+                        statusIcon,
                         size: 11,
-                        color: isUploaded
-                            ? AppColors.assessmentConsistent
-                            : AppColors.textMuted,
+                        color: statusColor,
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        isUploaded ? 'Uploaded' : 'Missing',
+                        statusText,
                         style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
-                          color: isUploaded
-                              ? AppColors.assessmentConsistent
-                              : AppColors.textMuted,
+                          color: statusColor,
                         ),
                       ),
                     ],
@@ -734,7 +885,8 @@ class _ProductReferenceEvidenceScreenState
     final productSku = _product?['sku']?.toString() ?? '';
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: MerchantHeader(
+        title: 'Trusted Product Evidence',
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           tooltip: 'Back to Products',
@@ -746,7 +898,6 @@ class _ProductReferenceEvidenceScreenState
             }
           },
         ),
-        title: const Text('Trusted Product Evidence'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh_rounded),

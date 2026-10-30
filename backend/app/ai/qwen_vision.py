@@ -205,49 +205,222 @@ class QwenVisionService:
             ],
             "format": "json",
             "stream": False,
+            "keep_alive": "5m",
             "options": {
                 "temperature": 0.1,
                 "num_ctx": 4096,
             },
         }
 
+    def _post_ollama_chat(
+        self,
+        payload: Dict[str, Any],
+        timeout: float = 120.0,
+        context_name: str = "qwen",
+    ) -> Dict[str, Any]:
+        """Send HTTP POST to Ollama /api/chat with complete diagnostic logging.
+
+        Strictly handles non-streaming (stream=False) and streaming (stream=True) responses.
+        """
+        is_stream = bool(payload.get("stream", False))
         start_t = time.time()
+
+        with httpx.Client(timeout=timeout) as client:
+            if not is_stream:
+                resp = client.post(f"{self.ollama_url}/api/chat", json=payload)
+                dur_ms = int((time.time() - start_t) * 1000)
+
+                ctype = resp.headers.get("content-type", "unknown")
+                clen = resp.headers.get("content-length", "unknown")
+                raw_text = resp.text
+                body_len = len(raw_text)
+                preview = raw_text[:250].replace("\n", " ") if raw_text else "<EMPTY>"
+
+                if resp.status_code != 200:
+                    logger.error(
+                        "QWEN_HTTP_ERROR: context=%s, status=%d, dur_ms=%d, body=%s",
+                        context_name, resp.status_code, dur_ms, preview
+                    )
+                    raise RuntimeError(f"Ollama API returned HTTP status {resp.status_code}: {preview}")
+
+                try:
+                    res_json = resp.json()
+                except Exception as parse_err:
+                    logger.error(
+                        "QWEN_JSON_PARSE_ERROR: context=%s, status=%d, body_len=%d, preview=%s, err=%s",
+                        context_name, resp.status_code, body_len, preview, parse_err
+                    )
+                    raise RuntimeError(f"Failed to parse Ollama JSON response: {parse_err}") from parse_err
+
+                raw_keys = list(res_json.keys()) if isinstance(res_json, dict) else []
+                msg = res_json.get("message") if isinstance(res_json, dict) and isinstance(res_json.get("message"), dict) else {}
+                msg_keys = list(msg.keys())
+                msg_role = msg.get("role", "unknown")
+                content = (msg.get("content") or "").strip()
+                done = bool(res_json.get("done", False))
+                done_reason = res_json.get("done_reason", "unknown")
+                content_len = len(content)
+
+                model_res = res_json.get("model", "")
+                total_duration = res_json.get("total_duration")
+                load_duration = res_json.get("load_duration")
+                prompt_eval_duration = res_json.get("prompt_eval_duration")
+                eval_duration = res_json.get("eval_duration")
+                eval_count = res_json.get("eval_count")
+                prompt_eval_count = res_json.get("prompt_eval_count")
+
+                logger.info(
+                    "QWEN_DIAGNOSTICS: context=%s, status=%d, model=%s, done=%s, done_reason=%s, "
+                    "role=%s, content_len=%d, ctype=%s, clen=%s, stream=false, body_len=%d, preview=%s, "
+                    "res_keys=%s, msg_keys=%s, total_dur=%s, load_dur=%s, prompt_eval_dur=%s, "
+                    "eval_dur=%s, eval_cnt=%s, prompt_eval_cnt=%s, dur_ms=%d",
+                    context_name, resp.status_code, model_res, done, done_reason,
+                    msg_role, content_len, ctype, clen, body_len, preview,
+                    raw_keys, msg_keys, total_duration, load_duration, prompt_eval_duration,
+                    eval_duration, eval_count, prompt_eval_count, dur_ms
+                )
+
+                if not content or not done:
+                    logger.warning(
+                        "QWEN_EMPTY_OR_INCOMPLETE_RESPONSE: context=%s, done=%s, done_reason=%s, content_len=%d",
+                        context_name, done, done_reason, content_len
+                    )
+
+                return {
+                    "content": content,
+                    "done": done,
+                    "done_reason": done_reason,
+                    "model": model_res,
+                    "raw_keys": raw_keys,
+                    "msg_keys": msg_keys,
+                    "total_duration": total_duration,
+                    "load_duration": load_duration,
+                    "prompt_eval_duration": prompt_eval_duration,
+                    "eval_duration": eval_duration,
+                    "eval_count": eval_count,
+                    "prompt_eval_count": prompt_eval_count,
+                    "dur_ms": dur_ms,
+                }
+            else:
+                content_chunks = []
+                last_json = {}
+                lines_count = 0
+                with client.stream("POST", f"{self.ollama_url}/api/chat", json=payload) as resp:
+                    if resp.status_code != 200:
+                        raise RuntimeError(f"Ollama streaming returned HTTP status {resp.status_code}")
+                    for line in resp.iter_lines():
+                        if not line or not line.strip():
+                            continue
+                        lines_count += 1
+                        try:
+                            chunk = json.loads(line)
+                            if isinstance(chunk, dict):
+                                last_json = chunk
+                                msg = chunk.get("message") or {}
+                                chunk_content = msg.get("content") or ""
+                                if chunk_content:
+                                    content_chunks.append(chunk_content)
+                        except Exception:
+                            continue
+
+                dur_ms = int((time.time() - start_t) * 1000)
+                full_content = "".join(content_chunks).strip()
+                done = bool(last_json.get("done", False))
+
+                logger.info(
+                    "QWEN_STREAM_DIAGNOSTICS: context=%s, lines=%d, content_len=%d, done=%s, dur_ms=%d",
+                    context_name, lines_count, len(full_content), done, dur_ms
+                )
+                return {
+                    "content": full_content,
+                    "done": done,
+                    "raw_keys": list(last_json.keys()),
+                    "msg_keys": list((last_json.get("message") or {}).keys()) if isinstance(last_json.get("message"), dict) else [],
+                    "dur_ms": dur_ms,
+                }
+
+    def analyze_reference_image(
+        self,
+        image_bytes: bytes,
+        angle: str,
+        product_info: Dict[str, Any],
+    ) -> ProductReferenceAnalysisResult:
+        """Perform individual Qwen visual analysis on ONE merchant reference image.
+
+        Processes references one-at-a-time to prevent VRAM overflow.
+        """
+        opt_bytes = optimize_image_for_inference(image_bytes, max_dim=1024)
+        img_b64 = base64.b64encode(opt_bytes).decode("utf-8")
+
+        prompt = (
+            f"You are a forensic product visual evidence analyzer.\n"
+            f"Extract detailed visual metadata from this SINGLE merchant product reference photo.\n\n"
+            f"--- MERCHANDISE SPECIFICATIONS ---\n"
+            f"Product Name: {product_info.get('name', 'Unknown')}\n"
+            f"SKU: {product_info.get('sku', 'Unknown')}\n"
+            f"Category: {product_info.get('category', 'Unknown')}\n"
+            f"Description: {product_info.get('description', 'None')}\n"
+            f"Reference Angle: {angle.upper()}\n\n"
+            f"--- INSTRUCTIONS ---\n"
+            f"Extract objective visual metadata. DO NOT invent details not visible.\n"
+            f"Return strictly a JSON object with this EXACT structure:\n"
+            f"{{\n"
+            f'  "angle": "{angle.upper()}",\n'
+            f'  "summary": "Factual visual synthesis of this reference image",\n'
+            f'  "confidence": 0.95,\n'
+            f'  "metadata": {{\n'
+            f'    "product_category": "{product_info.get("category", "General")}",\n'
+            f'    "brand": "{product_info.get("name", "").split()[0] if product_info.get("name") else "Unspecified"}",\n'
+            f'    "model": "{product_info.get("sku", "Unspecified")}",\n'
+            f'    "visible_product_identity": "concise description of visible item",\n'
+            f'    "shape": "geometric silhouette and shape details",\n'
+            f'    "dimensions_proportions": "estimated visual proportions or unclear",\n'
+            f'    "color": "primary and secondary colors visible",\n'
+            f'    "material": "visible materials (plastic, metal, etc.) or unclear",\n'
+            f'    "texture_finish": "matte, glossy, brushed, etc. or unclear",\n'
+            f'    "distinctive_features": ["feature 1", "feature 2"],\n'
+            f'    "buttons_ports_components": ["component 1", "component 2"],\n'
+            f'    "logos_markings": ["logo or marking 1"],\n'
+            f'    "visible_text": ["printed label text 1"],\n'
+            f'    "packaging_characteristics": "packaging details if visible or null",\n'
+            f'    "physical_condition": "NEW",\n'
+            f'    "orientation_angle": "{angle.upper()}",\n'
+            f'    "important_landmarks": ["landmark 1", "landmark 2"],\n'
+            f'    "image_quality": "GOOD",\n'
+            f'    "occlusions": ["occluded detail if any"],\n'
+            f'    "uncertainties": ["detail not inferable from this single angle"]\n'
+            f"  }}\n"
+            f"}}\n\n"
+            f"Produce VALID JSON ONLY."
+        )
+
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [img_b64],
+                }
+            ],
+            "format": "json",
+            "stream": False,
+            "keep_alive": "5m",
+            "options": {
+                "temperature": 0.1,
+                "num_ctx": 4096,
+            },
+        }
+
         logger.info(
             "Invoking Qwen2.5-VL 3B for SINGLE reference analysis (Angle: %s, Product: %s)",
             angle,
             product_info.get("sku", "Unknown"),
         )
 
-        response_text = ""
         try:
-            with httpx.Client(timeout=90.0) as client:
-                resp = client.post(f"{self.ollama_url}/api/chat", json=payload)
-                dur_ms = int((time.time() - start_t) * 1000)
-
-                # Diagnostic logging
-                logger.info(
-                    "QWEN_REF_ANALYSIS_HTTP: status=%d, dur_ms=%d, angle=%s",
-                    resp.status_code,
-                    dur_ms,
-                    angle,
-                )
-
-                if resp.status_code != 200:
-                    raise RuntimeError(f"Ollama HTTP status {resp.status_code}: {resp.text[:200]}")
-
-                res_json = resp.json()
-                msg = res_json.get("message") or {}
-                response_text = (msg.get("content") or "").strip()
-
-                logger.info(
-                    "QWEN_REF_DIAGNOSTICS: model=%s, angle=%s, res_keys=%s, msg_keys=%s, content_len=%d",
-                    res_json.get("model", self.model_name),
-                    angle,
-                    list(res_json.keys()),
-                    list(msg.keys()) if isinstance(msg, dict) else [],
-                    len(response_text),
-                )
-
+            res_dict = self._post_ollama_chat(payload, timeout=90.0, context_name=f"reference_{angle.lower()}")
+            response_text = res_dict.get("content", "")
         except Exception as exc:
             logger.error("Failed to analyze reference angle %s via Qwen: %s", angle, exc)
             raise RuntimeError(f"Reference visual analysis failed for angle {angle}: {exc}") from exc
@@ -293,18 +466,24 @@ class QwenVisionService:
             refund_reason = str(claim_context.get("refund_reason") or claim_context.get("workflow_step_key") or "").upper()
             claim_notes = str(claim_context.get("customer_notes") or claim_context.get("claim_text") or "")
 
-        # Format visual profile text context
+        # Format visual profile text context and canonical product names
         profile_text = "No pre-computed profile available."
-        if visual_profile:
+        canon_name = product_info.get('name', 'Unknown')
+        canon_cat = product_info.get('category', 'Unknown')
+        if visual_profile and isinstance(visual_profile, dict):
             profile_text = json.dumps(visual_profile, indent=2)
+            if visual_profile.get("canonical_product_name"):
+                canon_name = f"{visual_profile.get('canonical_product_name')} ({product_info.get('name', '')})"
+            if visual_profile.get("category"):
+                canon_cat = visual_profile.get("category")
 
         prompt_lines = [
             QWEN_VISION_SYSTEM_INSTRUCTION,
             "",
-            "--- MERCHANDISE SPECIFICATIONS ---",
-            f"Product Name: {product_info.get('name', 'Unknown')}",
+            "--- MERCHANDISE SPECIFICATIONS & CANONICAL PROFILE ---",
+            f"Canonical Product Name: {canon_name}",
             f"SKU: {product_info.get('sku', 'Unknown')}",
-            f"Category: {product_info.get('category', 'Unknown')}",
+            f"Category: {canon_cat}",
             f"Description: {product_info.get('description', 'None')}",
             "",
             "--- CONSOLIDATED PRODUCT VISUAL PROFILE ---",
@@ -323,7 +502,9 @@ class QwenVisionService:
         prompt_lines.extend([
             "",
             "--- REQUIRED FORENSIC ANALYSIS & OUTPUT SCHEMA ---",
-            "Evaluate Image #1 (Customer Evidence) against the product visual profile and specifications.",
+            "Evaluate Image #1 (Customer Evidence) against the CONSOLIDATED PRODUCT VISUAL PROFILE.",
+            "Compare Image #1 to the canonical product identity, category, shape, colors, materials, and design features established in the visual profile.",
+            "If Image #1 depicts the same product type/category as the consolidated visual profile, set matches_trusted_product = 'MATCH'.",
             "Return strictly a JSON object with this EXACT structure:",
             "{",
             '  "capture_assessment": {',
@@ -391,6 +572,7 @@ class QwenVisionService:
             ],
             "format": "json",
             "stream": False,
+            "keep_alive": "5m",
             "options": {
                 "temperature": 0.1,
                 "num_ctx": 8192,
@@ -408,39 +590,17 @@ class QwenVisionService:
         last_exc = None
         for attempt in range(2):
             try:
-                with httpx.Client(timeout=120.0) as client:
-                    resp = client.post(f"{self.ollama_url}/api/chat", json=payload)
-                    dur_ms = int((time.time() - start_t) * 1000)
-
-                    # Diagnostic logging
-                    logger.info(
-                        "QWEN_EVIDENCE_ANALYSIS_HTTP: attempt=%d, status=%d, dur_ms=%d, payload_images=%d",
-                        attempt + 1,
-                        resp.status_code,
-                        dur_ms,
-                        len(images_b64),
-                    )
-
-                    if resp.status_code != 200:
-                        raise RuntimeError(f"Ollama API returned HTTP status {resp.status_code}: {resp.text[:300]}")
-
-                    res_json = resp.json()
-                    msg = res_json.get("message") or {}
-                    response_text = (msg.get("content") or "").strip()
-
-                    logger.info(
-                        "QWEN_DIAGNOSTICS: model=%s, res_keys=%s, msg_keys=%s, content_len=%d, done=%s",
-                        res_json.get("model", self.model_name),
-                        list(res_json.keys()),
-                        list(msg.keys()) if isinstance(msg, dict) else [],
-                        len(response_text),
-                        res_json.get("done", False),
-                    )
-                    if response_text:
-                        break
-                    else:
-                        logger.warning("Attempt %d: Qwen returned empty response text. Retrying after 1s...", attempt + 1)
-                        time.sleep(1.0)
+                res_dict = self._post_ollama_chat(
+                    payload,
+                    timeout=120.0,
+                    context_name=f"customer_evidence_attempt_{attempt + 1}",
+                )
+                response_text = res_dict.get("content", "")
+                if response_text:
+                    break
+                else:
+                    logger.warning("Attempt %d: Qwen returned empty content. Retrying...", attempt + 1)
+                    time.sleep(1.0)
             except Exception as exc:
                 last_exc = exc
                 logger.warning("Attempt %d failed: %s", attempt + 1, exc)

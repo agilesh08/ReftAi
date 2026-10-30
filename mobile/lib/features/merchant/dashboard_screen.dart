@@ -8,6 +8,7 @@ import '../../shared/widgets/assessment_badge.dart';
 import '../../shared/widgets/decision_badge.dart';
 import '../../shared/widgets/stat_card.dart';
 import '../../shared/widgets/status_badge.dart';
+import '../../shared/widgets/merchant_header.dart';
 import '../../state/auth_provider.dart';
 import '../../state/merchant_dashboard_provider.dart';
 
@@ -742,13 +743,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     final provider = context.watch<MerchantDashboardProvider>();
 
     return Scaffold(
-      appBar: AppBar(
-        title: Image.asset(
-          'assets/branding/reft_wordmark.png',
-          width: 118,
-          fit: BoxFit.contain,
-          semanticLabel: 'Reft.AI',
-        ),
+      appBar: MerchantHeader(
         actions: [
           IconButton(
             icon: const Icon(Icons.settings_outlined),

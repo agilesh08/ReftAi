@@ -92,6 +92,25 @@ def setup_test_verification(
             files={"image": (f"{angle.lower()}.jpg", img_bytes, "image/jpeg")},
         )
 
+    # Force READY status for test setup so session creation passes
+    from tests.conftest import TestingSessionLocal
+    db_t = TestingSessionLocal()
+    try:
+        from app.models.product import Product
+        from app.models.product_visual_profile import ProductVisualProfile, ProductVisualProfileStatus
+        prod = db_t.execute(select(Product).where(Product.id == product_id)).scalar_one()
+        prod.reference_processing_status = "READY"
+        prof = db_t.execute(select(ProductVisualProfile).where(ProductVisualProfile.product_id == product_id)).scalar_one_or_none()
+        if not prof:
+            prof = ProductVisualProfile(product_id=product_id, status=ProductVisualProfileStatus.READY.value, profile_json={"mock": "profile"})
+            db_t.add(prof)
+        else:
+            prof.status = ProductVisualProfileStatus.READY.value
+            prof.profile_json = {"mock": "profile"}
+        db_t.commit()
+    finally:
+        db_t.close()
+
     # 2. Workflow with IMAGE, PAYMENT, ORDER, DELIVERY, LOCATION steps
     wf_res = client.post(
         "/api/v1/workflows",

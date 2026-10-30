@@ -110,15 +110,19 @@ def get_session_by_token(db: Session, raw_token: str) -> VerificationSession:
             session.held_at = None
             session.hold_until = None
             session.held_by = None
-            event = VerificationEvent(
-                session_id=session.id,
-                verification_id=session.verification_id,
-                event_type=VerificationEventType.SESSION_RESUMED.value,
-                metadata_json={"auto_resumed": True, "resumed_at": now.isoformat(), "restored_status": restored},
-            )
-            db.add(event)
-            db.commit()
-            db.refresh(session)
+            try:
+                event = VerificationEvent(
+                    session_id=session.id,
+                    verification_id=session.verification_id,
+                    event_type=VerificationEventType.SESSION_RESUMED.value,
+                    metadata_json={"auto_resumed": True, "resumed_at": now.isoformat(), "restored_status": restored},
+                )
+                db.add(event)
+                db.commit()
+                db.refresh(session)
+            except Exception as exc:
+                db.rollback()
+                logger.warning("Failed to save auto-resumed session event: %s", exc)
         else:
             logger.info("Customer accessed held verification session %s", session.verification_id)
             raise HTTPException(
@@ -130,15 +134,19 @@ def get_session_by_token(db: Session, raw_token: str) -> VerificationSession:
     if session.status == SessionStatus.EXPIRED.value or ensure_utc(session.expires_at) <= now:
         if session.status != SessionStatus.EXPIRED.value:
             session.status = SessionStatus.EXPIRED.value
-            event = VerificationEvent(
-                session_id=session.id,
-                verification_id=session.verification_id,
-                event_type=VerificationEventType.SESSION_EXPIRED.value,
-                metadata_json={"detected_at": now.isoformat()},
-            )
-            db.add(event)
-            db.commit()
-            db.refresh(session)
+            try:
+                event = VerificationEvent(
+                    session_id=session.id,
+                    verification_id=session.verification_id,
+                    event_type=VerificationEventType.SESSION_EXPIRED.value,
+                    metadata_json={"detected_at": now.isoformat()},
+                )
+                db.add(event)
+                db.commit()
+                db.refresh(session)
+            except Exception as exc:
+                db.rollback()
+                logger.warning("Failed to save session expiration event: %s", exc)
 
         logger.info("Customer accessed expired verification session %s", session.verification_id)
         raise HTTPException(

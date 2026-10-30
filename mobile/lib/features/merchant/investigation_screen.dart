@@ -8,6 +8,7 @@ import '../../shared/widgets/assessment_badge.dart';
 import '../../shared/widgets/decision_badge.dart';
 import '../../shared/widgets/section_card.dart';
 import '../../shared/widgets/status_badge.dart';
+import '../../shared/widgets/merchant_header.dart';
 import '../../state/merchant_dashboard_provider.dart';
 import 'decision_dialog.dart';
 
@@ -202,7 +203,7 @@ class _InvestigationScreenState extends State<InvestigationScreen> {
 
     if (provider.isLoadingDetail || detail == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Investigation View')),
+        appBar: const MerchantHeader(title: 'Investigation View'),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
@@ -215,7 +216,8 @@ class _InvestigationScreenState extends State<InvestigationScreen> {
         : 'N/A';
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: MerchantHeader(
+        title: 'Verification Investigation',
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           tooltip: 'Back to Dashboard',
@@ -227,14 +229,13 @@ class _InvestigationScreenState extends State<InvestigationScreen> {
             }
           },
         ),
-        title: const Text('Verification Investigation'),
         actions: [
           TextButton.icon(
             onPressed: () => context.push('/investigation/${widget.verificationId}/customer-response'),
-            icon: const Icon(Icons.assignment_ind_outlined, color: Colors.white, size: 18),
+            icon: const Icon(Icons.assignment_ind_outlined, color: AppColors.darkNeutral, size: 18),
             label: const Text(
               'Customer Response',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+              style: TextStyle(color: AppColors.darkNeutral, fontWeight: FontWeight.w700),
             ),
           ),
         ],

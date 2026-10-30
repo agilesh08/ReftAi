@@ -5,6 +5,8 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.models.merchant import Merchant
+from app.models.workflow import Workflow
 from app.models.verification import VerificationSession, SessionStatus, utc_now
 from app.models.product import Product
 from app.models.evidence import Evidence, EvidenceType
@@ -75,7 +77,9 @@ def test_schema_forbids_fraud_and_verdict_in_question():
 
 def test_mcq_followup_cycle_and_text_fulfillment(client: TestClient, db_session: Session):
     """Verify MCQ follow-up generation and customer fulfillment with selected option."""
-    # 1. Setup session
+    # 1. Setup session with Merchant, Product, and Workflow
+    m = Merchant(id="m_test_mcq", business_name="MCQ Store", email="mcq@test.com", password_hash="hash")
+    db_session.add(m)
     prod = Product(
         merchant_id="m_test_mcq",
         name="Noise Cancelling Earbuds",
@@ -83,6 +87,8 @@ def test_mcq_followup_cycle_and_text_fulfillment(client: TestClient, db_session:
         price=199.99,
     )
     db_session.add(prod)
+    wf = Workflow(id="wf_mcq_test", merchant_id="m_test_mcq", name="MCQ Test Workflow")
+    db_session.add(wf)
     db_session.flush()
 
     sess = VerificationSession(
@@ -92,7 +98,7 @@ def test_mcq_followup_cycle_and_text_fulfillment(client: TestClient, db_session:
         order_id="ORD-MCQ-1",
         refund_reason="Left earbud does not play audio",
         refund_amount=199.99,
-        workflow_id="wf_test",
+        workflow_id=wf.id,
         workflow_version=1,
         workflow_snapshot_json={
             "steps": [
@@ -143,6 +149,8 @@ def test_mcq_followup_cycle_and_text_fulfillment(client: TestClient, db_session:
 
 def test_ollama_processing_concurrency_guard(db_session: Session):
     """Verify that an active PROCESSING run blocks concurrent duplicate Ollama invocations."""
+    m = Merchant(id="m_test_concur", business_name="Concur Store", email="concur@test.com", password_hash="hash")
+    db_session.add(m)
     prod = Product(
         merchant_id="m_test_concur",
         name="Test Item",
@@ -150,6 +158,8 @@ def test_ollama_processing_concurrency_guard(db_session: Session):
         price=50.0,
     )
     db_session.add(prod)
+    wf = Workflow(id="wf_concur_test", merchant_id="m_test_concur", name="Concur Test Workflow")
+    db_session.add(wf)
     db_session.flush()
 
     sess = VerificationSession(
@@ -157,7 +167,7 @@ def test_ollama_processing_concurrency_guard(db_session: Session):
         merchant_id="m_test_concur",
         product_id=prod.id,
         order_id="ORD-CONCUR-1",
-        workflow_id="wf_test",
+        workflow_id=wf.id,
         workflow_version=1,
         workflow_snapshot_json={"steps": [{"step_key": "step1", "step_type": "IMAGE"}]},
         status=SessionStatus.IN_PROGRESS.value,

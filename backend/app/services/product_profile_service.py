@@ -16,6 +16,8 @@ from app.models.product_visual_profile import (
 )
 from app.ai.qwen_vision import qwen_vision_service
 from app.ai.ollama_reasoning import ollama_reasoning_service
+from app.ai.gemini_vision import gemini_vision_service
+from app.core.config import settings
 from app.utils.file_storage import get_reference_file_path
 
 logger = logging.getLogger(__name__)
@@ -76,8 +78,8 @@ def analyze_single_product_reference(
     # Create or update analysis record in PROCESSING state
     if not existing_analysis:
         analysis = ProductReferenceVisualAnalysis(
-            product_id=product.id,
-            product_reference_id=ref.id,
+            product=product,
+            product_reference=ref,
             angle=ref.angle,
             image_hash=ref.image_hash,
             model_name=qwen_vision_service.model_name,
@@ -94,45 +96,71 @@ def analyze_single_product_reference(
         analysis.error_message = None
 
     db.commit()
-    db.refresh(analysis)
+    analysis_id = analysis.id
+    ref_angle = ref.angle
+    ref_image_path = ref.image_path
 
     # Read reference image bytes
+    ref_file_path = get_reference_file_path(ref_image_path)
+    image_bytes = ref_file_path.read_bytes()
+
+    # Commit active transaction to release SQLite DB lock during 15-30s Qwen network call
+    db.commit()
+
     try:
-        ref_file_path = get_reference_file_path(ref.image_path)
-        image_bytes = ref_file_path.read_bytes()
+        result = None
+        if gemini_vision_service.is_available():
+            try:
+                logger.info("Attempting Gemini Vision for reference angle %s (product: %s)", ref_angle, product_info["id"])
+                result = gemini_vision_service.analyze_reference_image(
+                    image_bytes=image_bytes,
+                    angle=ref_angle,
+                    product_info=product_info,
+                )
+            except Exception as gem_err:
+                logger.warning("Gemini Vision reference analysis failed (%s); falling back to Qwen2.5-VL", gem_err)
+                result = None
 
-        # Invoke Qwen for this single reference image
-        result = qwen_vision_service.analyze_reference_image(
-            image_bytes=image_bytes,
-            angle=ref.angle,
-            product_info=product_info,
-        )
+        if result is None:
+            result = qwen_vision_service.analyze_reference_image(
+                image_bytes=image_bytes,
+                angle=ref_angle,
+                product_info=product_info,
+            )
 
-        analysis.result_json = result.model_dump()
-        analysis.status = ProductReferenceAnalysisStatus.COMPLETED.value
-        analysis.error_message = None
+        analysis_rec = db.execute(
+            select(ProductReferenceVisualAnalysis).where(ProductReferenceVisualAnalysis.id == analysis_id)
+        ).scalar_one_or_none()
+        if not analysis_rec:
+            raise ValueError(f"ProductReferenceVisualAnalysis {analysis_id} not found after Qwen call")
+        analysis_rec.result_json = result.model_dump()
+        analysis_rec.status = ProductReferenceAnalysisStatus.COMPLETED.value
+        analysis_rec.error_message = None
         db.commit()
-        db.refresh(analysis)
         logger.info(
             "Completed Qwen reference analysis %s for angle %s (product: %s)",
-            analysis.id,
-            ref.angle,
-            product.id,
+            analysis_rec.id,
+            ref_angle,
+            product_info["id"],
         )
-        return analysis
+        return analysis_rec
 
     except Exception as exc:
         logger.error(
             "Failed Qwen reference analysis for angle %s of product %s: %s",
-            ref.angle,
-            product.id,
+            ref_angle,
+            product_info["id"],
             exc,
         )
-        analysis.status = ProductReferenceAnalysisStatus.FAILED.value
-        analysis.error_message = str(exc)
-        db.commit()
-        db.refresh(analysis)
-        return analysis
+        analysis_rec = db.execute(
+            select(ProductReferenceVisualAnalysis).where(ProductReferenceVisualAnalysis.id == analysis_id)
+        ).scalar_one_or_none()
+        if analysis_rec:
+            analysis_rec.status = ProductReferenceAnalysisStatus.FAILED.value
+            analysis_rec.error_message = str(exc)
+            db.commit()
+            return analysis_rec
+        raise
 
 
 def process_product_references_and_consolidate_profile(
@@ -160,7 +188,7 @@ def process_product_references_and_consolidate_profile(
     ref_by_angle = {ref.angle: ref for ref in references}
     current_hashes = {ref.angle: ref.image_hash for ref in references}
 
-    # Process each uploaded reference image sequentially
+    # Process each uploaded reference image sequentially (ONE AT A TIME)
     completed_analyses: List[Dict[str, Any]] = []
     failed_angles: List[str] = []
 
@@ -227,8 +255,11 @@ def process_product_references_and_consolidate_profile(
             "category": getattr(product, "category", "General Merchandise"),
         }
 
+        # Commit DB session to release lock before Llama 3.2 1B network call
+        db.commit()
+
         try:
-            # Consolidate via Llama 3.2 1B
+            # Consolidate via Llama 3.2 1B (text metadata only, 0 images)
             profile_result = ollama_reasoning_service.consolidate_product_visual_profile(
                 product_info=product_info,
                 reference_analyses=completed_analyses,
@@ -275,7 +306,10 @@ def invalidate_product_visual_profile(db: Session, product_id: str) -> None:
     ).scalar_one_or_none()
 
     if product:
-        product.reference_processing_status = "PROCESSING"
+        if len(product.references) == 4:
+            product.reference_processing_status = "PROCESSING"
+        else:
+            product.reference_processing_status = "NOT_READY"
 
     db.commit()
     logger.info("Invalidated ProductVisualProfile for product %s", product_id)

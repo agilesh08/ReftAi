@@ -168,12 +168,26 @@ def run_reasoning(
     db.commit()
     db.refresh(run)
 
+    run_db_id = run.id
+    v_id = session.verification_id
+
     # 8. Invoke Ollama reasoning service
     start_ts = time.time()
+    logger.info("AI_TRACE | LLAMA_START | verification_id=%s | model=%s", v_id, ollama_reasoning_service.model_name)
+
+    # Commit active transaction to release SQLite DB lock during network call
+    db.commit()
+
     try:
         raw_result = ollama_reasoning_service.generate_reasoning(context)
         from app.ai.ollama_reasoning import normalize_and_validate_reasoning_result
         result: ReasoningResult = normalize_and_validate_reasoning_result(raw_result)
+
+        duration_ms = int((time.time() - start_ts) * 1000)
+        logger.info(
+            "AI_TRACE | LLAMA_COMPLETE | verification_id=%s | model=%s | duration_ms=%d | status=COMPLETED",
+            v_id, ollama_reasoning_service.model_name, duration_ms
+        )
 
         # 9. Guardrail & Closed Action Validation
         if result.action not in [
@@ -191,7 +205,7 @@ def run_reasoning(
         if has_failed_visual and result.action == ReasoningAction.ACCEPT_EVIDENCE:
             logger.warning(
                 "FAIL-SAFE ENFORCED: Overriding ACCEPT_EVIDENCE for session %s because visual analysis failed or is missing",
-                session.verification_id,
+                v_id,
             )
             result.action = ReasoningAction.REQUEST_MORE_EVIDENCE
             result.requested_evidence_type = "CUSTOMER_IMAGE"
@@ -214,65 +228,67 @@ def run_reasoning(
                     f"Recommended next_step_key '{result.next_step_key}' does not exist in the session's frozen workflow snapshot"
                 )
 
+        # Re-fetch in fresh transaction
+        run_rec = db.execute(
+            select(ReasoningRun).where(ReasoningRun.id == run_db_id)
+        ).scalar_one()
+
         # Save success state
-        run.result_json = result.model_dump()
-        run.status = ReasoningRunStatus.COMPLETED.value
-        run.completed_at = utc_now()
+        run_rec.result_json = result.model_dump()
+        run_rec.status = ReasoningRunStatus.COMPLETED.value
+        run_rec.completed_at = utc_now()
 
         # Audit event
         event = VerificationEvent(
             session_id=session.id,
-            verification_id=session.verification_id,
+            verification_id=v_id,
             event_type=VerificationEventType.AI_REASONING_COMPLETED.value,
             metadata_json={
                 "action": result.action.value,
                 "confidence": result.confidence,
                 "next_step_key": result.next_step_key,
-                "run_id": run.id,
+                "run_id": run_rec.id,
             },
         )
         db.add(event)
         db.commit()
-        db.refresh(run)
+        db.refresh(run_rec)
 
-        duration_ms = (time.time() - start_ts) * 1000
-        logger.info(
-            "Reasoning run %s completed successfully for session %s (Action: %s, duration: %.1fms)",
-            run.id,
-            session.verification_id,
-            result.action.value,
-            duration_ms,
-        )
-        return run
+        logger.info("AI_TRACE | LLAMA_RESULT_SAVED | verification_id=%s", v_id)
+        return run_rec
 
     except Exception as exc:
-        duration_ms = (time.time() - start_ts) * 1000
+        db.rollback()
+        duration_ms = int((time.time() - start_ts) * 1000)
         logger.error(
-            "Reasoning execution failed for session %s after %.1fms: %s",
-            session.verification_id,
-            duration_ms,
-            exc,
+            "AI_TRACE | LLAMA_COMPLETE | verification_id=%s | model=%s | duration_ms=%d | status=FAILED | error=%s",
+            v_id, ollama_reasoning_service.model_name, duration_ms, exc,
             exc_info=True,
         )
-        run.status = ReasoningRunStatus.FAILED.value
-        run.error_message = str(exc)
-        run.completed_at = utc_now()
+        run_rec = db.execute(
+            select(ReasoningRun).where(ReasoningRun.id == run_db_id)
+        ).scalar_one_or_none()
+        if run_rec:
+            run_rec.status = ReasoningRunStatus.FAILED.value
+            run_rec.error_message = str(exc)
+            run_rec.completed_at = utc_now()
 
-        # Fail-Safe: Verification session and customer evidence remain UNCHANGED
-        event = VerificationEvent(
-            session_id=session.id,
-            verification_id=session.verification_id,
-            event_type=VerificationEventType.AI_REASONING_FAILED.value,
-            metadata_json={
-                "error": str(exc)[:200],
-                "run_id": run.id,
-            },
-        )
-        db.add(event)
-        db.commit()
-        db.refresh(run)
+            # Fail-Safe: Verification session and customer evidence remain UNCHANGED
+            event = VerificationEvent(
+                session_id=session.id,
+                verification_id=v_id,
+                event_type=VerificationEventType.AI_REASONING_FAILED.value,
+                metadata_json={
+                    "error": str(exc)[:200],
+                    "run_id": run_rec.id,
+                },
+            )
+            db.add(event)
+            db.commit()
+            db.refresh(run_rec)
+            return run_rec
 
-        return run
+        raise
 
 
 def list_reasoning_runs(

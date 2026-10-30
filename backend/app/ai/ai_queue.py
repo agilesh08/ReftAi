@@ -87,6 +87,8 @@ class AIJobQueueManager:
                 self._handle_profile_consolidation(db, job)
             elif job.job_type == JobType.CUSTOMER_VISUAL_ANALYSIS:
                 self._handle_customer_visual_analysis(db, job)
+            elif job.job_type == JobType.LLAMA_REASONING:
+                self._handle_llama_reasoning(db, job)
             else:
                 logger.warning("Unknown job type: %s", job.job_type)
             db.commit()
@@ -129,8 +131,38 @@ class AIJobQueueManager:
             logger.error("Invalid CUSTOMER_VISUAL_ANALYSIS job parameters")
             return
 
-        from app.services import evidence_processing_service
+        from app.services import evidence_processing_service, adaptive_verification_service
         evidence_processing_service.process_evidence_visual_analysis(db, job.evidence_id)
+        if job.verification_id:
+            try:
+                from app.models.verification import VerificationSession
+                sess = db.get(VerificationSession, job.verification_id)
+                if sess:
+                    adaptive_verification_service.run_adaptive_reasoning_cycle(
+                        db=db,
+                        merchant_id=sess.merchant_id,
+                        verification_identifier=sess.id,
+                    )
+            except Exception as exc:
+                logger.warning("Adaptive reasoning after visual analysis failed: %s", exc)
+
+    def _handle_llama_reasoning(self, db, job: AIJob):
+        if not job.verification_id:
+            logger.error("Invalid LLAMA_REASONING job parameters")
+            return
+
+        from app.services import adaptive_verification_service
+        try:
+            from app.models.verification import VerificationSession
+            sess = db.get(VerificationSession, job.verification_id)
+            if sess:
+                adaptive_verification_service.run_adaptive_reasoning_cycle(
+                    db=db,
+                    merchant_id=sess.merchant_id,
+                    verification_identifier=sess.id,
+                )
+        except Exception as exc:
+            logger.warning("Llama reasoning job failed: %s", exc)
 
 
 # Global singleton instance

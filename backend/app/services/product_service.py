@@ -139,10 +139,11 @@ def get_product_completeness(
     merchant_id: str,
     product_id: str,
 ) -> ProductReferenceStatusResponse:
-    """Calculate the availability of all 4 trusted reference angles (FRONT, BACK, LEFT, RIGHT)."""
+    """Calculate the availability and AI analysis status of all 4 trusted reference angles (FRONT, BACK, LEFT, RIGHT)."""
     product = get_merchant_product(db, merchant_id, product_id)
 
-    uploaded_angles = {ref.angle.upper() for ref in product.references}
+    uploaded_map = {ref.angle.upper(): ref for ref in product.references}
+    uploaded_angles = set(uploaded_map.keys())
 
     status_map = {
         "front": ReferenceAngle.FRONT.value in uploaded_angles,
@@ -151,13 +152,32 @@ def get_product_completeness(
         "right": ReferenceAngle.RIGHT.value in uploaded_angles,
     }
 
+    # Fetch reference analysis statuses
+    from app.models.product_reference_analysis import ProductReferenceVisualAnalysis
+    analysis_records = db.execute(
+        select(ProductReferenceVisualAnalysis).where(ProductReferenceVisualAnalysis.product_id == product.id)
+    ).scalars().all()
+
+    analysis_by_angle = {a.angle.upper(): a.status for a in analysis_records}
+
+    angle_analysis_status: Dict[str, str] = {}
+    for angle in ["FRONT", "BACK", "LEFT", "RIGHT"]:
+        if angle not in uploaded_angles:
+            angle_analysis_status[angle] = "MISSING"
+        else:
+            angle_analysis_status[angle] = analysis_by_angle.get(angle, "PENDING")
+
     existing_count = sum(1 for v in status_map.values() if v)
     required_count = len(status_map)
     is_comp = existing_count == required_count
 
+    processing_status = getattr(product, "reference_processing_status", "NOT_READY") or "NOT_READY"
+
     return ProductReferenceStatusResponse(
         product_id=product.id,
         reference_status=status_map,
+        reference_processing_status=processing_status,
+        angle_analysis_status=angle_analysis_status,
         complete=is_comp,
         is_complete=is_comp,
         existing_count=existing_count,

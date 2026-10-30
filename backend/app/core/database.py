@@ -37,12 +37,14 @@ engine = create_engine(
 
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
-    """Enable WAL journal mode and busy_timeout pragma for SQLite connections."""
+    """Enable WAL journal mode, synchronous=NORMAL, and busy_timeout pragma for SQLite connections."""
     if settings.DATABASE_URL.startswith("sqlite"):
         try:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL;")
             cursor.execute("PRAGMA busy_timeout=30000;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+            cursor.execute("PRAGMA foreign_keys=ON;")
             cursor.close()
         except Exception as exc:
             logger.warning("Could not set SQLite WAL/busy_timeout pragma: %s", exc)
@@ -65,7 +67,14 @@ def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         db.close()
 
 

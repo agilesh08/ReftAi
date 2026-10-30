@@ -251,8 +251,8 @@ def test_upload_four_reference_angles_and_completeness(client: TestClient):
     assert len(list_ref_res.json()) == 4
 
 
-def test_duplicate_angle_rejected_with_409(client: TestClient):
-    """Test that uploading a second image for the same angle returns HTTP 409 Conflict."""
+def test_duplicate_angle_replaces_cleanly(client: TestClient):
+    """Test that uploading a second image for the same angle cleanly replaces the reference."""
     _, auth = register_and_get_auth(client, "dup_ref@merchant.com")
     prod = client.post(
         "/api/v1/products",
@@ -269,7 +269,7 @@ def test_duplicate_angle_rejected_with_409(client: TestClient):
     )
     assert res1.status_code == status.HTTP_201_CREATED
 
-    # Second upload for FRONT angle
+    # Second upload for FRONT angle replaces reference cleanly
     img2 = make_test_image("PNG", color="yellow")
     res2 = client.post(
         f"/api/v1/products/{prod['id']}/references",
@@ -277,8 +277,8 @@ def test_duplicate_angle_rejected_with_409(client: TestClient):
         data={"angle": "FRONT"},
         files={"image": ("front2.png", img2, "image/png")},
     )
-    assert res2.status_code == status.HTTP_409_CONFLICT
-    assert "already exists" in res2.json()["detail"]
+    assert res2.status_code == status.HTTP_201_CREATED
+    assert res2.json()["image_hash"] == calculate_sha256(img2)
 
 
 def test_invalid_and_unsupported_image_rejection(client: TestClient):

@@ -24,6 +24,19 @@ venv/
 env/
 ENV/
 .env
+.env.local
+.env.*.local
+*.env
+backend/.env
+web/.env
+web/.env.local
+
+# Web Frontend (React / Vite)
+web/node_modules/
+node_modules/
+web/dist/
+web/dist-ssr/
+web/.cache/
 
 # SQLite Databases & Local Storage
 *.db
@@ -39,6 +52,7 @@ backend/refund_system.db
 backend/refund_verification.db
 backend/server.log
 backend/server_err.log
+*.log
 
 # Uploaded Files (keep structures)
 storage/product_references/*
@@ -86,3 +100,5 @@ mobile/*.apk
 .DS_Store
 Thumbs.db
 *.iml
+.tempmediaStorage/
+.user_uploaded/

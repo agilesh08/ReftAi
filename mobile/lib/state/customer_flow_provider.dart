@@ -46,6 +46,14 @@ class CustomerFlowProvider extends ChangeNotifier {
   bool get hasPendingAdaptiveRequests =>
       _adaptiveRequests.any((r) => r.isPending);
 
+  Future<void> refreshOverview() async {
+    if (_token == null) return;
+    try {
+      _overview = await _service.getOverview(_token!);
+      notifyListeners();
+    } catch (_) {}
+  }
+
   Future<void> loadSession(String rawToken) async {
     _token = rawToken;
     _isLoading = true;

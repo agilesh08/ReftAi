@@ -85,14 +85,42 @@ def setup_test_verification(
     )
     product_id = prod_res.json()["id"]
 
-    for angle in ["FRONT", "BACK", "LEFT", "RIGHT"]:
-        img_bytes = make_test_image(color="teal")
-        client.post(
-            f"/api/v1/products/{product_id}/references",
-            headers={"Authorization": auth},
-            data={"angle": angle},
-            files={"image": (f"{angle.lower()}.jpg", img_bytes, "image/jpeg")},
-        )
+    with patch("app.ai.ai_queue.ai_job_queue.enqueue"):
+        for angle in ["FRONT", "BACK", "LEFT", "RIGHT"]:
+            img_bytes = make_test_image(color="teal")
+            client.post(
+                f"/api/v1/products/{product_id}/references",
+                headers={"Authorization": auth},
+                data={"angle": angle},
+                files={"image": (f"{angle.lower()}.jpg", img_bytes, "image/jpeg")},
+            )
+
+    # Force READY status for test setup so session creation passes
+    from tests.conftest import TestingSessionLocal
+    db_t = TestingSessionLocal()
+    try:
+        from app.models.product import Product
+        from app.models.product_visual_profile import ProductVisualProfile, ProductVisualProfileStatus
+        prod = db_t.execute(select(Product).where(Product.id == product_id)).scalar_one()
+        prod.reference_processing_status = "READY"
+        prof = db_t.execute(select(ProductVisualProfile).where(ProductVisualProfile.product_id == product_id)).scalar_one_or_none()
+        if not prof:
+            prof = ProductVisualProfile(
+                product_id=product_id,
+                qwen_model_name="qwen2.5vl:3b-q4_K_M",
+                llama_model_name="llama3.2:1b",
+                profile_version="v1.0-profile",
+                reference_hashes_json={},
+                status=ProductVisualProfileStatus.READY.value,
+                profile_json={"mock": "profile"},
+            )
+            db_t.add(prof)
+        else:
+            prof.status = ProductVisualProfileStatus.READY.value
+            prof.profile_json = {"mock": "profile"}
+        db_t.commit()
+    finally:
+        db_t.close()
 
     # 2. Workflow with 3 steps
     wf_res = client.post(
@@ -185,6 +213,7 @@ class TestStepValidation:
         _, auth = register_and_auth(client, "adapt1@store.com")
         sess_data, token = setup_test_verification(client, auth, "SKU-A1")
 
+        db_session.expire_all()
         session = db_session.get(VerificationSession, sess_data["id"])
         step = evidence_request_service.validate_requested_step(session, "damage_photo", "CUSTOMER_IMAGE")
         assert step["step_key"] == "damage_photo"
@@ -700,11 +729,19 @@ class TestClosedLoopAdaptiveCycle:
                     f"/api/v1/public/verifications/{token}/evidence-requests/{req_id}/fulfill",
                     files={"file": ("serial.jpg", img2, "image/jpeg")},
                 )
+                assert fulfill_res.status_code == status.HTTP_200_OK
+                f_data = fulfill_res.json()
+                assert f_data["request"]["status"] == "FULFILLED"
 
-        assert fulfill_res.status_code == status.HTTP_200_OK
-        f_data = fulfill_res.json()
-        assert f_data["request"]["status"] == "FULFILLED"
-        assert f_data["reasoning_action"] == "COMPLETE_VERIFICATION"
+                # Execute enqueued background job synchronously within mock context
+                from app.ai.ai_queue import ai_job_queue, AIJob, JobType
+                ev_id = f_data["evidence"]["evidence_id"]
+                job = AIJob(
+                    job_type=JobType.CUSTOMER_VISUAL_ANALYSIS,
+                    evidence_id=ev_id,
+                    verification_id=verification_id,
+                )
+                ai_job_queue._handle_customer_visual_analysis(db_session, job)
 
         # Check reasoning runs history (should have 2 runs)
         runs = client.get(
@@ -756,10 +793,23 @@ class TestClosedLoopAdaptiveCycle:
                     f"/api/v1/public/verifications/{token}/evidence-requests/{req_id}/fulfill",
                     files={"file": ("extra.jpg", img, "image/jpeg")},
                 )
+                assert res.status_code == status.HTTP_200_OK
+                ev_id = res.json()["evidence"]["evidence_id"]
+                from app.ai.ai_queue import ai_job_queue, AIJob, JobType
+                job = AIJob(
+                    job_type=JobType.CUSTOMER_VISUAL_ANALYSIS,
+                    evidence_id=ev_id,
+                    verification_id=verification_id,
+                )
+                ai_job_queue._handle_customer_visual_analysis(db_session, job)
 
-        assert res.status_code == status.HTTP_200_OK
-        assert res.json()["reasoning_action"] == "CONTINUE_WORKFLOW"
-        assert res.json()["next_step_key"] == "customer_explanation"
+        runs = client.get(
+            f"/api/v1/verifications/{verification_id}/reasoning",
+            headers={"Authorization": auth},
+        ).json()
+        assert len(runs) >= 1
+        assert runs[0]["result"]["action"] == "CONTINUE_WORKFLOW"
+        assert runs[0]["result"]["next_step_key"] == "customer_explanation"
 
 
 # ===========================================================================

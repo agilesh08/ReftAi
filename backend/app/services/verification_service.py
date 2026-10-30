@@ -90,7 +90,7 @@ def create_verification_session(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "code": "REFERENCE_ANALYSIS_IN_PROGRESS",
-                "message": f"This product is still being prepared for visual verification. Please wait until reference analysis is complete."
+                "message": "Reference images are still being analysed. Please wait until the product is ready."
             },
         )
     elif current_status == "FAILED" or (profile and profile.status == ProductVisualProfileStatus.FAILED.value):
@@ -99,7 +99,7 @@ def create_verification_session(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "code": "REFERENCE_ANALYSIS_FAILED",
-                "message": f"Trusted reference analysis for '{product.name}' failed. Please re-upload reference images."
+                "message": "Reference analysis failed. Please retry."
             },
         )
     elif current_status != "READY" or not profile or profile.status != ProductVisualProfileStatus.READY.value:

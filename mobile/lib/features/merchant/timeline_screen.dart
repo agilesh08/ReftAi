@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../../core/constants/app_colors.dart';
+import '../../shared/widgets/merchant_header.dart';
 import '../../state/merchant_dashboard_provider.dart';
 
 /// Vertical chronological timeline screen of immutable verification audit events.
@@ -63,7 +64,8 @@ class _TimelineScreenState extends State<TimelineScreen> {
     final timeline = provider.selectedTimeline;
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: MerchantHeader(
+        title: 'Audit Event Timeline',
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           tooltip: 'Back to Investigation',
@@ -75,7 +77,6 @@ class _TimelineScreenState extends State<TimelineScreen> {
             }
           },
         ),
-        title: const Text('Audit Event Timeline'),
       ),
       body: provider.isLoadingDetail
           ? const Center(child: CircularProgressIndicator())

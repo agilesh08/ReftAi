@@ -27,6 +27,8 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://localhost:8000",
         "http://localhost:8080",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
     ]
 
     @field_validator("CORS_ORIGINS", mode="before")
@@ -64,7 +66,7 @@ class Settings(BaseSettings):
     LLAMA_REASONING_PROMPT_VERSION: str = "v1"
 
     # Adaptive Evidence Follow-Up (Milestone 9)
-    MAX_ADAPTIVE_FOLLOWUPS: int = 3
+    MAX_ADAPTIVE_FOLLOWUPS: int = 20
 
     # Evidence Fusion Engine (Milestone 11)
     LOCATION_MATCH_RADIUS_METERS: float = 500.0

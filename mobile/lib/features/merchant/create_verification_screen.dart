@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/network/api_exception.dart';
 import '../../services/merchant_service.dart';
+import '../../shared/widgets/merchant_header.dart';
 
 /// Screen allowing merchants to create and dispatch a new verification session.
 class CreateVerificationScreen extends StatefulWidget {
@@ -134,20 +135,44 @@ class _CreateVerificationScreenState extends State<CreateVerificationScreen> {
             : (comp?['missing_angles'] is List
                 ? (4 - (comp!['missing_angles'] as List).length).clamp(0, 4)
                 : 0));
+    final procStatus = (comp?['reference_processing_status']?.toString() ??
+            product['reference_processing_status']?.toString() ??
+            'NOT_READY')
+        .toUpperCase();
+
+    Color cardBg = AppColors.assessmentReviewRequiredBg.withValues(alpha: 0.5);
+    Color cardBorder = AppColors.assessmentReviewRequired.withValues(alpha: 0.35);
+    Color iconColor = AppColors.assessmentReviewRequired;
+    IconData iconData = Icons.warning_amber_rounded;
+    String statusMessage = 'Trusted Reference: Incomplete ($count/4 angles). Upload 4 reference angles to enable verification.';
+
+    if (procStatus == 'READY') {
+      cardBg = AppColors.assessmentConsistentBg.withValues(alpha: 0.5);
+      cardBorder = AppColors.assessmentConsistent.withValues(alpha: 0.35);
+      iconColor = AppColors.assessmentConsistent;
+      iconData = Icons.check_circle_rounded;
+      statusMessage = '✓ Trusted Reference: Ready for Visual Verification (4/4 angles analyzed & profile consolidated)';
+    } else if (procStatus == 'PROCESSING') {
+      cardBg = AppColors.primaryLight.withValues(alpha: 0.5);
+      cardBorder = AppColors.primary.withValues(alpha: 0.35);
+      iconColor = AppColors.primary;
+      iconData = Icons.hourglass_top_rounded;
+      statusMessage = '⏳ AI is analyzing reference images. Verification will be available when complete.';
+    } else if (procStatus == 'FAILED') {
+      cardBg = AppColors.assessmentInconsistentBg.withValues(alpha: 0.5);
+      cardBorder = AppColors.assessmentInconsistent.withValues(alpha: 0.35);
+      iconColor = AppColors.assessmentInconsistent;
+      iconData = Icons.error_outline_rounded;
+      statusMessage = '⚠ Reference analysis failed for this product. Please retry or re-upload reference images.';
+    }
 
     return Container(
       margin: const EdgeInsets.only(top: 8, bottom: 14),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: isComplete
-            ? AppColors.assessmentConsistentBg.withValues(alpha: 0.5)
-            : AppColors.assessmentReviewRequiredBg.withValues(alpha: 0.5),
+        color: cardBg,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: isComplete
-              ? AppColors.assessmentConsistent.withValues(alpha: 0.35)
-              : AppColors.assessmentReviewRequired.withValues(alpha: 0.35),
-        ),
+        border: Border.all(color: cardBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -178,26 +203,18 @@ class _CreateVerificationScreenState extends State<CreateVerificationScreen> {
           Row(
             children: [
               Icon(
-                isComplete
-                    ? Icons.check_circle_rounded
-                    : Icons.warning_amber_rounded,
+                iconData,
                 size: 14,
-                color: isComplete
-                    ? AppColors.assessmentConsistent
-                    : AppColors.assessmentReviewRequired,
+                color: iconColor,
               ),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  isComplete
-                      ? 'Trusted Reference: Ready for Visual Verification (4/4 angles)'
-                      : 'Trusted Reference: Incomplete ($count/4 angles) — AI visual verification will have reduced confidence.',
+                  statusMessage,
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
-                    color: isComplete
-                        ? AppColors.assessmentConsistent
-                        : AppColors.assessmentReviewRequired,
+                    color: iconColor,
                   ),
                 ),
               ),
@@ -686,11 +703,25 @@ class _CreateVerificationScreenState extends State<CreateVerificationScreen> {
       (p) => p['id']?.toString() == _selectedProductId,
       orElse: () => {},
     );
-    final status = selectedProduct['reference_processing_status']?.toString() ?? 'NOT_READY';
-    if (status == 'PROCESSING') {
+    final comp = _completenessMap[_selectedProductId];
+    final status = (comp?['reference_processing_status']?.toString() ??
+            selectedProduct['reference_processing_status']?.toString() ??
+            'NOT_READY')
+        .toUpperCase();
+
+    if (status != 'READY') {
+      String msg = 'Product trusted visual profile is not ready.';
+      if (status == 'PROCESSING') {
+        msg = 'Reference analysis is currently in progress. Please wait until complete.';
+      } else if (status == 'FAILED') {
+        msg = 'Reference analysis failed for this product. Please re-upload reference images.';
+      } else {
+        msg = 'Product is incomplete. All 4 reference angles are required before creating verification sessions.';
+      }
+
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('This product is still being prepared for visual verification. Please wait until reference analysis is complete.'),
+        SnackBar(
+          content: Text(msg),
           backgroundColor: AppColors.assessmentReviewRequired,
         ),
       );
@@ -750,7 +781,8 @@ class _CreateVerificationScreenState extends State<CreateVerificationScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: MerchantHeader(
+        title: 'Create Verification',
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           tooltip: 'Back to Dashboard',
@@ -762,7 +794,6 @@ class _CreateVerificationScreenState extends State<CreateVerificationScreen> {
             }
           },
         ),
-        title: const Text('Create Verification'),
       ),
       body: _isLoadingData
           ? const Center(child: CircularProgressIndicator())
