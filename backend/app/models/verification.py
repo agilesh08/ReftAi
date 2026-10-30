@@ -97,6 +97,21 @@ class VerificationSession(Base):
         nullable=False,
         index=True,
     )
+    processing_stage: Mapped[Optional[str]] = mapped_column(
+        String(50),
+        default="PENDING",
+        nullable=True,
+    )
+    processing_status: Mapped[Optional[str]] = mapped_column(
+        String(50),
+        default="PENDING",
+        nullable=True,
+    )
+    processing_error: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        default=None,
+    )
     customer_token_hash: Mapped[str] = mapped_column(
         String(64),
         unique=True,

@@ -9,6 +9,7 @@ import {
   X,
   ShieldCheck,
   Video,
+  Sliders,
 } from 'lucide-react';
 
 export function CustomerCameraCapture({ onCapture, tips = [] }) {
@@ -17,7 +18,12 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
   const [facingMode, setFacingMode] = useState('environment'); // Rear camera preferred on mobile
   const [cameraError, setCameraError] = useState(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
+  const [isVideoReady, setIsVideoReady] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
+
+  // Available video devices for desktop camera selection
+  const [videoDevices, setVideoDevices] = useState([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState('');
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -31,6 +37,25 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
   ];
 
   const effectiveTips = tips.length > 0 ? tips : defaultTips;
+
+  // Enumerate video input devices when supported
+  const refreshDevices = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter((d) => d.kind === 'videoinput');
+      setVideoDevices(videoInputs);
+      if (videoInputs.length > 0 && !selectedDeviceId) {
+        setSelectedDeviceId(videoInputs[0].deviceId);
+      }
+    } catch (err) {
+      console.warn('Unable to enumerate media devices:', err);
+    }
+  }, [selectedDeviceId]);
+
+  useEffect(() => {
+    refreshDevices();
+  }, [refreshDevices]);
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -46,6 +71,7 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
     }
     setStream(null);
     setIsCameraActive(false);
+    setIsVideoReady(false);
   }, []);
 
   // Cleanup media tracks on unmount or navigation away
@@ -55,10 +81,46 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
     };
   }, [stopCamera]);
 
+  // Robustly attach stream to video element whenever video element or stream becomes available
+  useEffect(() => {
+    if (!isCameraActive || !stream || !videoRef.current) return;
+
+    let isSubscribed = true;
+    const video = videoRef.current;
+
+    // Direct object assignment
+    video.srcObject = stream;
+
+    const handleLoadedMetadata = async () => {
+      if (!isSubscribed) return;
+      try {
+        await video.play();
+        if (isSubscribed) {
+          setIsVideoReady(true);
+        }
+      } catch (err) {
+        console.warn('Auto play failed:', err);
+      }
+    };
+
+    video.addEventListener('loadedmetadata', handleLoadedMetadata);
+
+    // Fallback: If metadata was already loaded
+    if (video.readyState >= 1) {
+      handleLoadedMetadata();
+    }
+
+    return () => {
+      isSubscribed = false;
+      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+    };
+  }, [stream, isCameraActive]);
+
   // Start device camera using getUserMedia
-  const startCamera = async (mode = facingMode) => {
+  const startCamera = async (mode = facingMode, deviceId = selectedDeviceId) => {
     setCameraError(null);
     setPendingPreview(null);
+    setIsVideoReady(false);
     stopCamera();
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -69,12 +131,27 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
     }
 
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: {
+      // Build platform-appropriate video constraints
+      let videoConstraints;
+
+      if (deviceId) {
+        // Specific device requested
+        videoConstraints = {
+          deviceId: { exact: deviceId },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        };
+      } else {
+        // Mobile / Default: prefer facingMode
+        videoConstraints = {
           facingMode: { ideal: mode },
           width: { ideal: 1920 },
           height: { ideal: 1080 },
-        },
+        };
+      }
+
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: videoConstraints,
         audio: false,
       });
 
@@ -83,9 +160,8 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
       setIsCameraActive(true);
       setFacingMode(mode);
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-      }
+      // Refresh devices to get device labels now that permission was granted
+      refreshDevices();
     } catch (err) {
       console.warn('Camera access error:', err);
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
@@ -101,18 +177,35 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
           'The camera is currently in use by another application. Please close other camera tabs or apps and try again.'
         );
       } else {
-        setCameraError(
-          `Unable to access live camera (${err.message || 'initialization failed'}). Please verify browser camera permissions.`
-        );
+        // Try fallback to generic video: true without constraints
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          streamRef.current = fallbackStream;
+          setStream(fallbackStream);
+          setIsCameraActive(true);
+          refreshDevices();
+          return;
+        } catch (fallbackErr) {
+          setCameraError(
+            `Unable to access live camera (${err.message || 'initialization failed'}). Please verify browser camera permissions.`
+          );
+        }
       }
       setIsCameraActive(false);
     }
   };
 
-  // Toggle front/rear camera
+  // Switch camera by device ID (Desktop / Multi-camera)
+  const handleDeviceChange = (e) => {
+    const newDeviceId = e.target.value;
+    setSelectedDeviceId(newDeviceId);
+    startCamera(facingMode, newDeviceId);
+  };
+
+  // Toggle front/rear camera (Mobile)
   const toggleCamera = () => {
     const nextMode = facingMode === 'environment' ? 'user' : 'environment';
-    startCamera(nextMode);
+    startCamera(nextMode, '');
   };
 
   // Snap photo from video feed
@@ -123,7 +216,7 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 960;
+    canvas.height = video.videoHeight || 720;
     const ctx = canvas.getContext('2d');
 
     // If front camera, flip horizontally for natural mirror image
@@ -254,8 +347,18 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
             autoPlay
             playsInline
             muted
-            className={`w-full h-full object-cover ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`}
+            className={`w-full h-full object-contain ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`}
           />
+
+          {/* Loading spinner while video stream initializes */}
+          {!isVideoReady && (
+            <div className="absolute inset-0 bg-neutral-950/80 backdrop-blur-xs flex flex-col items-center justify-center text-white gap-2 z-20">
+              <RefreshCw className="w-8 h-8 animate-spin text-primary" />
+              <span className="text-xs font-medium text-slate-300">
+                Starting live camera stream...
+              </span>
+            </div>
+          )}
 
           {/* Viewfinder Target Guidelines */}
           <div className="absolute inset-5 sm:inset-8 md:inset-12 border-2 border-dashed border-white/50 rounded-2xl pointer-events-none flex items-center justify-center">
@@ -265,11 +368,30 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
           </div>
 
           {/* Top Camera Controls Bar */}
-          <div className="absolute top-3.5 inset-x-3.5 sm:inset-x-5 flex items-center justify-between z-10">
-            <span className="text-[10px] font-bold bg-primary text-white px-3 py-1 rounded-full uppercase tracking-wider shadow-sm flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
-              Live Camera
-            </span>
+          <div className="absolute top-3.5 inset-x-3.5 sm:inset-x-5 flex items-center justify-between z-10 gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold bg-primary text-white px-3 py-1 rounded-full uppercase tracking-wider shadow-sm flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                Live Camera
+              </span>
+
+              {/* Desktop Camera Device Dropdown (when multiple webcams exist) */}
+              {videoDevices.length > 1 && (
+                <div className="relative hidden sm:block">
+                  <select
+                    value={selectedDeviceId}
+                    onChange={handleDeviceChange}
+                    className="bg-black/60 text-white text-[11px] px-2.5 py-1 rounded-lg border border-white/20 backdrop-blur-xs focus:outline-none focus:ring-1 focus:ring-primary font-medium"
+                  >
+                    {videoDevices.map((dev, idx) => (
+                      <option key={dev.deviceId || idx} value={dev.deviceId} className="bg-slate-900 text-white">
+                        {dev.label || `Camera #${idx + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
 
             <div className="flex items-center gap-2">
               <button
@@ -296,8 +418,8 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
             <button
               type="button"
               onClick={takePhoto}
-              disabled={isCapturing}
-              className="w-16 h-16 sm:w-18 sm:h-18 rounded-full bg-white/90 hover:bg-white border-4 border-primary shadow-2xl flex items-center justify-center active:scale-90 transition-transform cursor-pointer"
+              disabled={isCapturing || !isVideoReady}
+              className="w-16 h-16 sm:w-18 sm:h-18 rounded-full bg-white/90 hover:bg-white border-4 border-primary shadow-2xl flex items-center justify-center active:scale-90 transition-transform cursor-pointer disabled:opacity-50"
               title="Capture Photo"
             >
               <div className="w-11 h-11 sm:w-13 sm:h-13 rounded-full bg-primary" />
@@ -318,6 +440,26 @@ export function CustomerCameraCapture({ onCapture, tips = [] }) {
               To verify physical condition and prevent return discrepancies, evidence must be captured directly using your device camera.
             </p>
           </div>
+
+          {/* Desktop Camera Choice before opening */}
+          {videoDevices.length > 1 && (
+            <div className="max-w-xs mx-auto">
+              <label className="block text-[11px] font-semibold text-slate-500 mb-1 text-left">
+                Select Camera
+              </label>
+              <select
+                value={selectedDeviceId}
+                onChange={(e) => setSelectedDeviceId(e.target.value)}
+                className="w-full bg-slate-50 text-slate-800 text-xs px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-1 focus:ring-primary font-medium"
+              >
+                {videoDevices.map((dev, idx) => (
+                  <option key={dev.deviceId || idx} value={dev.deviceId}>
+                    {dev.label || `Camera ${idx + 1}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div className="pt-1 flex flex-col items-center justify-center gap-3">
             <button

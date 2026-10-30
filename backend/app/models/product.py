@@ -2,7 +2,7 @@ from decimal import Decimal
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
-from sqlalchemy import String, Text, Numeric, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import String, Text, Numeric, DateTime, ForeignKey, UniqueConstraint, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -53,6 +53,11 @@ class Product(Base):
     reference_processing_status: Mapped[str] = mapped_column(
         String(36),
         default="NOT_READY",
+        nullable=False,
+    )
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(

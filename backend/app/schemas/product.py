@@ -50,6 +50,7 @@ class ProductResponse(BaseModel):
     reference_count: int = 0
     reference_angles_count: int = 0
     is_ready: bool = False
+    is_archived: bool = False
     created_at: datetime
     updated_at: datetime
 

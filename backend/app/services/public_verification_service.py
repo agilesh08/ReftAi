@@ -279,32 +279,118 @@ def complete_customer_session(db: Session, raw_token: str) -> VerificationStartR
     )
 
 
+def get_customer_session_status(db: Session, raw_token: str) -> dict:
+    """Retrieve actual real-time processing stage and status for customer verification."""
+    session = get_session_by_token(db, raw_token)
+    from app.models.evidence_request import EvidenceRequestStatus
+    from app.services import evidence_request_service
+
+    existing_requests = evidence_request_service.list_session_requests(db, session.id)
+    pending_req = next((r for r in existing_requests if r.status == EvidenceRequestStatus.PENDING.value), None)
+
+    pending_data = None
+    if pending_req:
+        options = getattr(pending_req, "options_json", None)
+        if not options:
+            options = ["Yes, observed as described", "Partially visible on unboxing", "No, not observed", "Other / Prefer to explain in text"]
+        pending_data = {
+            "id": pending_req.id,
+            "workflow_step_key": pending_req.workflow_step_key,
+            "requested_evidence_type": pending_req.requested_evidence_type,
+            "reason": pending_req.reason,
+            "prompt": pending_req.reason,
+            "options": options,
+            "status": pending_req.status,
+        }
+
+    fusion = session.fusion_results[0] if session.fusion_results else None
+
+    # Calculate fallback stage and status if not yet persisted
+    stage = session.processing_stage
+    status_val = session.processing_status
+    if session.status == SessionStatus.COMPLETED.value:
+        stage = "COMPLETE"
+        status_val = "COMPLETED"
+    elif pending_req:
+        stage = "REASONING"
+        status_val = "FOLLOWUP_REQUIRED"
+    elif not stage:
+        stage = "QUEUED"
+        status_val = "PROCESSING"
+
+    return {
+        "stage": stage,
+        "status": status_val,
+        "error": session.processing_error,
+        "is_completed": session.status == SessionStatus.COMPLETED.value,
+        "pending_followup": pending_data,
+        "machine_assessment": fusion.assessment_state if fusion else None,
+    }
+
+
 def analyze_customer_session(db: Session, raw_token: str) -> dict:
-    """Execute automated visual analysis and adaptive reasoning cycle for submitted customer evidence."""
+    """Execute automated Gemini visual analysis and reasoning cycle for submitted customer evidence."""
     session = get_session_by_token(db, raw_token)
     if session.status == SessionStatus.COMPLETED.value:
-        return {"status": "ALREADY_COMPLETED", "message": "Verification is already completed"}
+        return {
+            "stage": "COMPLETE",
+            "status": "COMPLETED",
+            "message": "Verification is already completed",
+        }
 
+    from app.core.config import settings
     from app.models.evidence import Evidence, EvidenceType
     from app.models.evidence_request import EvidenceRequestStatus
-    from app.services import evidence_request_service, evidence_processing_service, adaptive_verification_service
+    from app.services import evidence_request_service, evidence_processing_service, evidence_fusion_service
+    from app.ai.gemini_vision import gemini_vision_service
     from sqlalchemy import select
 
-    # Check for pending evidence request first
+    # Check for unconfigured Gemini API key
+    if not settings.GEMINI_API_KEY or not settings.GEMINI_API_KEY.strip():
+        session.processing_stage = "VISUAL_ANALYSIS"
+        session.processing_status = "FAILED"
+        session.processing_error = "AI verification is currently unavailable. The AI service is not configured. Please contact the merchant or try again later."
+        db.commit()
+        return {
+            "stage": "VISUAL_ANALYSIS",
+            "status": "FAILED",
+            "message": session.processing_error,
+            "error_code": "MISSING_API_KEY",
+        }
+
+    # Stage: Check for pending evidence request first
     existing_requests = evidence_request_service.list_session_requests(db, session.id)
     pending_req = next((r for r in existing_requests if r.status == EvidenceRequestStatus.PENDING.value), None)
     if pending_req:
+        session.processing_stage = "REASONING"
+        session.processing_status = "PENDING"
+        db.commit()
+        options = getattr(pending_req, "options_json", None) or [
+            "Yes, observed as described",
+            "Partially visible on unboxing",
+            "No, not observed",
+            "Other / Prefer to explain in text",
+        ]
         return {
+            "stage": "REASONING",
             "status": "FOLLOWUP_REQUIRED",
             "request": {
                 "id": pending_req.id,
                 "workflow_step_key": pending_req.workflow_step_key,
                 "requested_evidence_type": pending_req.requested_evidence_type,
                 "reason": pending_req.reason,
+                "prompt": pending_req.reason,
+                "options": options,
                 "status": pending_req.status,
             },
             "message": pending_req.reason,
         }
+
+    # Stage 2: QUEUED -> Processing
+    session.processing_stage = "QUEUED"
+    session.processing_status = "PROCESSING"
+    session.processing_error = None
+    db.commit()
 
     # Find latest image evidence
     latest_img = db.execute(
@@ -316,41 +402,95 @@ def analyze_customer_session(db: Session, raw_token: str) -> dict:
         .order_by(Evidence.created_at.desc())
     ).scalars().first()
 
-    if latest_img:
-        try:
-            evidence_processing_service.analyze_evidence_image(
-                db=db,
-                merchant_id=session.merchant_id,
-                verification_identifier=session.id,
-                evidence_identifier=latest_img.id,
-                force_reanalyze=False,
-            )
-        except Exception as exc:
-            logger.warning("Visual analysis in customer analyze failed gracefully: %s", exc)
+    if not latest_img:
+        session.processing_stage = "EVIDENCE_UPLOAD"
+        session.processing_status = "FAILED"
+        session.processing_error = "Unable to analyze the submitted image. Please capture another clear photograph."
+        db.commit()
+        return {
+            "stage": "EVIDENCE_UPLOAD",
+            "status": "FAILED",
+            "message": session.processing_error,
+            "error_code": "NO_IMAGE_EVIDENCE",
+        }
 
-        try:
-            run, req = adaptive_verification_service.run_adaptive_reasoning_cycle(
-                db=db,
-                merchant_id=session.merchant_id,
-                verification_identifier=session.id,
-            )
-            if req and req.status == EvidenceRequestStatus.PENDING.value:
-                return {
-                    "status": "FOLLOWUP_REQUIRED",
-                    "request": {
-                        "id": req.id,
-                        "workflow_step_key": req.workflow_step_key,
-                        "requested_evidence_type": req.requested_evidence_type,
-                        "reason": req.reason,
-                        "status": req.status,
-                    },
-                    "message": req.reason,
-                }
-        except Exception as exc:
-            logger.warning("Adaptive reasoning in customer analyze failed gracefully: %s", exc)
+    # Stage 3: VISUAL_ANALYSIS
+    session.processing_stage = "VISUAL_ANALYSIS"
+    session.processing_status = "PROCESSING"
+    db.commit()
+
+    try:
+        evidence_processing_service.analyze_evidence_image(
+            db=db,
+            merchant_id=session.merchant_id,
+            verification_identifier=session.id,
+            evidence_identifier=latest_img.id,
+            force_reanalyze=False,
+        )
+    except Exception as exc:
+        err_cat = gemini_vision_service.categorize_gemini_error(exc)
+        session.processing_stage = "VISUAL_ANALYSIS"
+        session.processing_status = "FAILED"
+        session.processing_error = err_cat["user_message"]
+        db.commit()
+        return {
+            "stage": "VISUAL_ANALYSIS",
+            "status": "FAILED",
+            "message": err_cat["user_message"],
+            "error_code": err_cat["error_code"],
+        }
+
+    # Re-check for newly generated pending follow-up evidence request
+    existing_requests = evidence_request_service.list_session_requests(db, session.id)
+    pending_req = next((r for r in existing_requests if r.status == EvidenceRequestStatus.PENDING.value), None)
+    if pending_req:
+        session.processing_stage = "REASONING"
+        session.processing_status = "PENDING"
+        db.commit()
+        options = getattr(pending_req, "options_json", None) or [
+            "Yes, observed as described",
+            "Partially visible on unboxing",
+            "No, not observed",
+            "Other / Prefer to explain in text",
+        ]
+        return {
+            "stage": "REASONING",
+            "status": "FOLLOWUP_REQUIRED",
+            "request": {
+                "id": pending_req.id,
+                "workflow_step_key": pending_req.workflow_step_key,
+                "requested_evidence_type": pending_req.requested_evidence_type,
+                "reason": pending_req.reason,
+                "prompt": pending_req.reason,
+                "options": options,
+                "status": pending_req.status,
+            },
+            "message": pending_req.reason,
+        }
+
+    # Stage 4: REASONING -> COMPLETE (No follow-up required or all fulfilled)
+    session.processing_stage = "REASONING"
+    session.processing_status = "PROCESSING"
+    db.commit()
+
+    try:
+        fusion_result = evidence_fusion_service.compute_session_fusion(db, session.id)
+    except Exception as fusion_exc:
+        logger.warning("Evidence fusion calculation encountered non-fatal issue: %s", fusion_exc)
+        fusion_result = None
+
+    # Stage 5: COMPLETE
+    session.processing_stage = "COMPLETE"
+    session.processing_status = "COMPLETED"
+    session.status = SessionStatus.COMPLETED.value
+    session.completed_at = utc_now()
+    session.processing_error = None
+    db.commit()
 
     return {
-        "status": "READY_FOR_REVIEW",
-        "message": "Evidence successfully analyzed and verified",
+        "stage": "COMPLETE",
+        "status": "COMPLETED",
+        "message": "Verification successfully processed and dossier generated",
+        "assessment": fusion_result.assessment_state if fusion_result else "REVIEW_REQUIRED",
     }
 

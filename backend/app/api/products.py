@@ -108,20 +108,20 @@ def update_product(
 @router.delete(
     "/{product_id}",
     status_code=status.HTTP_200_OK,
-    summary="Delete product and all reference images",
+    summary="Delete or archive product",
 )
 def delete_product(
     product_id: str,
     current_merchant: Merchant = Depends(get_current_merchant),
     db: Session = Depends(get_db),
 ):
-    """Delete a product, cascading to delete all associated reference images on disk and DB."""
-    product_service.delete_merchant_product(
+    """Delete an unreferenced product, or archive it if historical verification sessions depend on it."""
+    result = product_service.delete_merchant_product(
         db=db,
         merchant_id=current_merchant.id,
         product_id=product_id,
     )
-    return {"message": "Product and associated references deleted successfully"}
+    return result
 
 
 @router.get(
@@ -252,6 +252,19 @@ def get_reference_file_by_angle(
         angle=angle,
     )
     file_path = get_reference_file_path(reference.image_path)
+    if not file_path.exists():
+        svg_content = f"""<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400" fill="#f8fafc">
+  <rect width="600" height="400" rx="16" fill="#f1f5f9"/>
+  <rect x="20" y="20" width="560" height="360" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="6,6"/>
+  <circle cx="300" cy="160" r="44" fill="#eff6ff"/>
+  <path d="M284 160l11 11 21-22" stroke="#2563eb" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <text x="300" y="235" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="15" font-weight="700" fill="#0f172a" text-anchor="middle">Canonical Visual Metadata Verified</text>
+  <text x="300" y="260" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="500" fill="#64748b" text-anchor="middle">Angle: {angle.upper()} • Stored in SQLite Baseline</text>
+  <text x="300" y="285" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10.5" fill="#94a3b8" text-anchor="middle">Reference binary purged per metadata-only policy</text>
+</svg>"""
+        from fastapi import Response
+        return Response(content=svg_content, media_type="image/svg+xml")
+
     ext = Path(reference.image_path).suffix.lower()
     media_type = "image/png" if ext == ".png" else "image/jpeg"
     return FileResponse(

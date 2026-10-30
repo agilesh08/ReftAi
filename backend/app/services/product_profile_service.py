@@ -132,22 +132,33 @@ def analyze_single_product_reference(
             select(ProductReferenceVisualAnalysis).where(ProductReferenceVisualAnalysis.id == analysis_id)
         ).scalar_one_or_none()
         if not analysis_rec:
-            raise ValueError(f"ProductReferenceVisualAnalysis {analysis_id} not found after Qwen call")
+            raise ValueError(f"ProductReferenceVisualAnalysis {analysis_id} not found after analysis call")
         analysis_rec.result_json = result.model_dump()
         analysis_rec.status = ProductReferenceAnalysisStatus.COMPLETED.value
         analysis_rec.error_message = None
+        if gemini_vision_service.is_available():
+            analysis_rec.model_name = gemini_vision_service.model_name
         db.commit()
         logger.info(
-            "Completed Qwen reference analysis %s for angle %s (product: %s)",
+            "Completed reference analysis %s for angle %s (product: %s)",
             analysis_rec.id,
             ref_angle,
             product_info["id"],
         )
+
+        # Storage policy: Persist structured metadata and delete temporary reference file safely
+        from app.utils.file_storage import delete_reference_file
+        try:
+            delete_reference_file(ref_image_path)
+            logger.info("Storage policy: temporary reference file %s removed after successful metadata persistence", ref_image_path)
+        except Exception as del_err:
+            logger.warning("Could not delete temporary reference file %s: %s", ref_image_path, del_err)
+
         return analysis_rec
 
     except Exception as exc:
         logger.error(
-            "Failed Qwen reference analysis for angle %s of product %s: %s",
+            "Failed reference analysis for angle %s of product %s: %s",
             ref_angle,
             product_info["id"],
             exc,
@@ -170,7 +181,7 @@ def process_product_references_and_consolidate_profile(
 ) -> Optional[ProductVisualProfile]:
     """Process all reference images for a product ONE BY ONE and consolidate into a ProductVisualProfile.
 
-    Sequential processing prevents Ollama VRAM overload.
+    Sequential processing prevents AI resource contention.
     """
     product = db.execute(
         select(Product).where(Product.id == product_id)
@@ -230,19 +241,22 @@ def process_product_references_and_consolidate_profile(
         db.commit()
         return profile
 
+    used_vis_model = gemini_vision_service.model_name if gemini_vision_service.is_available() else qwen_vision_service.model_name
+    used_reason_model = gemini_vision_service.model_name if gemini_vision_service.is_available() else ollama_reasoning_service.model_name
+
     if not profile:
         profile = ProductVisualProfile(
             product_id=product.id,
-            qwen_model_name=qwen_vision_service.model_name,
-            llama_model_name=ollama_reasoning_service.model_name,
-            profile_version="v1.0-profile",
+            qwen_model_name=used_vis_model,
+            llama_model_name=used_reason_model,
+            profile_version="v2.0-gemini",
             reference_hashes_json=current_hashes,
             status=ProductVisualProfileStatus.PROCESSING.value,
         )
         db.add(profile)
     else:
-        profile.qwen_model_name = qwen_vision_service.model_name
-        profile.llama_model_name = ollama_reasoning_service.model_name
+        profile.qwen_model_name = used_vis_model
+        profile.llama_model_name = used_reason_model
         profile.reference_hashes_json = current_hashes
 
     # Check if all 4 angles are completed
@@ -255,22 +269,34 @@ def process_product_references_and_consolidate_profile(
             "category": getattr(product, "category", "General Merchandise"),
         }
 
-        # Commit DB session to release lock before Llama 3.2 1B network call
+        # Commit DB session to release lock before AI network call
         db.commit()
 
         try:
-            # Consolidate via Llama 3.2 1B (text metadata only, 0 images)
-            profile_result = ollama_reasoning_service.consolidate_product_visual_profile(
-                product_info=product_info,
-                reference_analyses=completed_analyses,
-            )
+            profile_result = None
+            if gemini_vision_service.is_available():
+                try:
+                    profile_result = gemini_vision_service.consolidate_product_visual_profile(
+                        product_info=product_info,
+                        reference_analyses=completed_analyses,
+                    )
+                except Exception as gem_err:
+                    logger.warning("Gemini visual profile consolidation failed (%s); trying local fallback", gem_err)
+                    profile_result = None
+
+            if profile_result is None:
+                profile_result = ollama_reasoning_service.consolidate_product_visual_profile(
+                    product_info=product_info,
+                    reference_analyses=completed_analyses,
+                )
+
             profile.profile_json = profile_result.model_dump()
             profile.status = ProductVisualProfileStatus.READY.value
             profile.error_message = None
             product.reference_processing_status = "READY"
             logger.info("Successfully consolidated ProductVisualProfile for product %s", product.id)
         except Exception as exc:
-            logger.error("Llama profile consolidation failed for product %s: %s", product.id, exc)
+            logger.error("Profile consolidation failed for product %s: %s", product.id, exc)
             profile.status = ProductVisualProfileStatus.PARTIAL.value
             profile.error_message = f"Consolidation failed: {exc}"
             profile.profile_json = {"raw_reference_observations": completed_analyses}

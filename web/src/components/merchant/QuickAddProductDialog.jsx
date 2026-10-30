@@ -27,8 +27,17 @@ export function QuickAddProductDialog({ isOpen = true, onProductCreated, onClose
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!name.trim() || !sku.trim()) {
+    const cleanName = name.trim();
+    const cleanSku = sku.trim().toUpperCase();
+    const parsedPrice = parseFloat(price);
+
+    if (!cleanName || !cleanSku) {
       setError('Please fill in required fields (Name and SKU).');
+      return;
+    }
+
+    if (isNaN(parsedPrice) || parsedPrice <= 0) {
+      setError('Please provide a valid product price greater than ₹0.00');
       return;
     }
 
@@ -36,15 +45,24 @@ export function QuickAddProductDialog({ isOpen = true, onProductCreated, onClose
     setError(null);
     try {
       const created = await productService.addProduct({
-        name: name.trim(),
-        sku: sku.trim().toUpperCase(),
-        price: parseFloat(price) || 0,
-        description: description.trim(),
+        name: cleanName,
+        sku: cleanSku,
+        price: parsedPrice,
+        description: description.trim() || null,
       });
       onProductCreated(created);
       onClose();
     } catch (err) {
-      setError('Failed to create product. Please try again.');
+      const serverDetail = err.response?.data?.detail;
+      let msg = 'Failed to create product. Please try again.';
+      if (typeof serverDetail === 'string') {
+        msg = serverDetail;
+      } else if (Array.isArray(serverDetail)) {
+        msg = serverDetail.map((d) => d.msg || d.loc?.join('.')).join(', ');
+      } else if (err.message) {
+        msg = err.message;
+      }
+      setError(msg);
     } finally {
       setIsSaving(false);
     }
@@ -114,11 +132,11 @@ export function QuickAddProductDialog({ isOpen = true, onProductCreated, onClose
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-darkNeutral mb-1">Price ($)</label>
+              <label className="block text-xs font-semibold text-darkNeutral mb-1">Price (₹)</label>
               <input
                 type="number"
                 step="0.01"
-                placeholder="299.99"
+                placeholder="2499.00"
                 className="w-full px-3 py-2 text-xs sm:text-sm border border-appBorder rounded-xl focus:outline-none focus:border-primary"
                 value={price}
                 onChange={(e) => setPrice(e.target.value)}

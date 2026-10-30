@@ -163,8 +163,11 @@ def client() -> Generator[TestClient, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def mock_gemini_vision_default_in_tests():
-    """Ensure test suite doesn't make live Gemini calls with dummy test bytes."""
-    with patch("app.ai.gemini_vision.gemini_vision_service.is_available", return_value=False):
+def mock_gemini_vision_default_in_tests(request):
+    """Ensure standard unit tests don't make live Gemini calls with dummy test bytes, but allow real tests."""
+    if "test_real_gemini" in request.node.nodeid or "test_full_verification_e2e" in request.node.nodeid or "live_gemini" in getattr(request, "keywords", {}):
         yield
+    else:
+        with patch("app.ai.gemini_vision.gemini_vision_service.is_available", return_value=False):
+            yield
 

@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { useMerchant } from '../../context/MerchantContext';
 import { MerchantHeader } from '../../components/common/MerchantHeader';
-import { formatDateTime } from '../../utils/formatters';
+import { formatDateTime, formatCurrency } from '../../utils/formatters';
 
 import { merchantService } from '../../services/api/merchantService';
 
@@ -56,7 +56,7 @@ export function TimelinePage() {
       title: 'Merchant Created Verification Session',
       actor: 'Merchant',
       timestamp: session.createdAt,
-      description: `Generated secure customer link for Order ${session.orderId} ($${session.refundAmount}).`,
+      description: `Generated secure customer link for Order ${session.orderId} (${formatCurrency(session.refundAmount)}).`,
       icon: User,
       color: 'bg-primary text-white',
     },

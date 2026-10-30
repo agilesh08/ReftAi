@@ -14,6 +14,7 @@ import {
   Package,
 } from 'lucide-react';
 import { MerchantHeader } from '../../components/common/MerchantHeader';
+import { formatCurrency } from '../../utils/formatters';
 
 export function VerificationCreatedPage() {
   const location = useLocation();
@@ -75,7 +76,7 @@ export function VerificationCreatedPage() {
             </div>
             <div className="text-right">
               <span className="text-[11px] font-semibold text-slate-400 block uppercase">Refund Amount</span>
-              <span className="font-bold text-emerald-600 text-sm">${refundAmount}</span>
+              <span className="font-bold text-emerald-600 text-sm">{formatCurrency(refundAmount)}</span>
             </div>
           </div>
 

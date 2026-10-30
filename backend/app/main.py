@@ -132,6 +132,16 @@ def root() -> RootResponse:
         503: {"model": HealthResponse, "description": "Database disconnected or unhealthy"},
     },
 )
+@app.get(
+    "/api/v1/health",
+    response_model=HealthResponse,
+    tags=["Health"],
+    summary="System and database health check (API v1)",
+    responses={
+        200: {"model": HealthResponse, "description": "System is healthy"},
+        503: {"model": HealthResponse, "description": "Database disconnected or unhealthy"},
+    },
+)
 def health_check(db: Session = Depends(get_db)):
     """Actively verify SQLite database connectivity and report system health."""
     try:

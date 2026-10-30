@@ -33,7 +33,41 @@ export function ProductReferenceEvidencePage() {
   const navigate = useNavigate();
   const { products, refreshData } = useMerchant();
 
-  const product = products.find((p) => p.id === id);
+  const [product, setProduct] = useState(() => products.find((p) => p.id === id) || null);
+  const [isLoadingProduct, setIsLoadingProduct] = useState(!products.find((p) => p.id === id));
+  const [productNotFound, setProductNotFound] = useState(false);
+
+  useEffect(() => {
+    const existing = products.find((p) => p.id === id);
+    if (existing) {
+      setProduct(existing);
+      setIsLoadingProduct(false);
+    }
+  }, [products, id]);
+
+  useEffect(() => {
+    if (!id) return;
+    let isMounted = true;
+    productService
+      .getProduct(id)
+      .then((data) => {
+        if (!isMounted) return;
+        setProduct(data);
+        setIsLoadingProduct(false);
+        setProductNotFound(false);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.warn('Error fetching product by ID:', err.message);
+        if (!products.find((p) => p.id === id)) {
+          setProductNotFound(true);
+        }
+        setIsLoadingProduct(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [id, products]);
 
   const [referenceImages, setReferenceImages] = useState({
     FRONT: null,
@@ -84,16 +118,38 @@ export function ProductReferenceEvidencePage() {
     loadReferences();
   }, [loadReferences]);
 
-  if (!product) {
+  if (isLoadingProduct && !product) {
+    return (
+      <div className="min-h-screen bg-appBg flex flex-col">
+        <MerchantHeader
+          title="Product Reference Baseline"
+          subtitle="Loading product information..."
+        />
+        <div className="flex-1 flex items-center justify-center p-4">
+          <div className="bg-white p-8 rounded-2xl border border-appBorder text-center max-w-sm w-full space-y-3">
+            <div className="w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin mx-auto" />
+            <h3 className="text-sm font-bold text-darkNeutral">Loading Product References</h3>
+            <p className="text-xs text-slate-500">Retrieving trusted 4-angle visual baselines...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (productNotFound || !product) {
     return (
       <div className="min-h-screen bg-appBg flex items-center justify-center p-4">
-        <div className="bg-white p-6 rounded-2xl border border-appBorder text-center">
-          <p className="text-xs text-slate-500 mb-3">Product not found.</p>
+        <div className="bg-white p-6 rounded-2xl border border-appBorder text-center max-w-sm w-full space-y-3">
+          <Package className="w-8 h-8 text-slate-300 mx-auto" />
+          <h3 className="text-sm font-bold text-darkNeutral">Product Not Found</h3>
+          <p className="text-xs text-slate-500">
+            The requested product does not exist in your catalog or has been removed.
+          </p>
           <button
             onClick={() => navigate('/settings/products')}
-            className="px-4 py-2 bg-primary text-white rounded-xl text-xs font-bold"
+            className="px-4 py-2 bg-primary text-white rounded-xl text-xs font-bold hover:bg-primary/90 transition-all cursor-pointer"
           >
-            Product Catalog
+            Back to Product Catalog
           </button>
         </div>
       </div>

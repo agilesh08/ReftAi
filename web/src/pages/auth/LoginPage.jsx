@@ -1,13 +1,13 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { ShieldCheck, Mail, Lock, ArrowRight, Eye, EyeOff, AlertCircle, ArrowLeft } from 'lucide-react';
+import { Mail, Lock, ArrowRight, Eye, EyeOff, AlertCircle, ArrowLeft } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
 export function LoginPage() {
   const navigate = useNavigate();
   const { login, loading, error, clearError } = useAuth();
-  const [email, setEmail] = useState('merchant@example.com');
-  const [password, setPassword] = useState('password123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [localError, setLocalError] = useState(null);
 
@@ -152,26 +152,6 @@ export function LoginPage() {
             </div>
           </form>
 
-          {/* Quick Demo Help Box */}
-          <div className="mt-6 pt-5 border-t border-slate-100 bg-slate-50/70 p-3 rounded-xl border border-slate-200/60">
-            <div className="flex items-center gap-2 text-xs font-bold text-slate-700 mb-1">
-              <ShieldCheck className="w-3.5 h-3.5 text-primary" />
-              Demo Credentials
-            </div>
-            <p className="text-[11px] text-slate-500 mb-2">
-              Sign in with mock credentials to test all merchant verification and investigation workflows.
-            </p>
-            <div className="grid grid-cols-2 gap-2 text-[11px] font-mono text-slate-600 bg-white p-2 rounded-lg border border-slate-200">
-              <div>
-                <span className="text-slate-400 block text-[9px] font-sans uppercase">Email</span>
-                merchant@example.com
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[9px] font-sans uppercase">Password</span>
-                password123
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* Customer Link Footer */}

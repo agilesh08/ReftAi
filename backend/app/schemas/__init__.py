@@ -27,6 +27,9 @@ from app.schemas.workflow import (
     WorkflowReorderRequest,
     WorkflowStatus,
     WorkflowStepType,
+    WorkflowSaveFullRequest,
+    AIGenerateWorkflowRequest,
+    AIGeneratedWorkflowResponse,
 )
 from app.schemas.verification import (
     VerificationCreateRequest,

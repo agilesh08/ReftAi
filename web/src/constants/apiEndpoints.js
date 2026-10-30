@@ -75,6 +75,7 @@ export const ApiEndpoints = {
   customerSignals: (token) => `${ApiEndpoints.baseUrl}/api/v1/public/verifications/${token}/signals`,
   customerFusion: (token) => `${ApiEndpoints.baseUrl}/api/v1/public/verifications/${token}/fusion`,
   customerAnalyze: (token) => `${ApiEndpoints.baseUrl}/api/v1/public/verifications/${token}/analyze`,
+  customerStatus: (token) => `${ApiEndpoints.baseUrl}/api/v1/public/verifications/${token}/status`,
   customerComplete: (token) => `${ApiEndpoints.baseUrl}/api/v1/public/verifications/${token}/complete`,
   customerExtractPaymentProof: (token) => `${ApiEndpoints.baseUrl}/api/v1/public/verifications/${token}/extract-payment-proof`,
   customerSubmitPaymentProof: (token) => `${ApiEndpoints.baseUrl}/api/v1/public/verifications/${token}/payment-proof`,

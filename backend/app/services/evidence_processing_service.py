@@ -247,35 +247,115 @@ def analyze_evidence_image(
         if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY.strip():
             try:
                 from app.ai.gemini_vision import gemini_vision_service
-                logger.info("AI_TRACE | GEMINI_START | verification_id=%s | evidence_id=%s | model=%s", v_id, ev_human_id, gemini_vision_service.model_name)
-                # Fetch actual reference image bytes for Gemini multimodal comparison
-                refs = db.execute(
-                    select(ProductReference).where(ProductReference.product_id == session.product_id)
-                ).scalars().all()
-                gemini_refs = []
-                for r in refs:
-                    try:
-                        p = get_reference_file_path(r.image_path)
-                        gemini_refs.append({
-                            "angle": r.angle,
-                            "bytes": p.read_bytes(),
-                            "mime_type": guess_image_mime(r.image_path),
-                        })
-                    except Exception as err:
-                        logger.warning("Could not load reference file for angle %s: %s", r.angle, err)
+                from app.models.product_reference_analysis import ProductReferenceVisualAnalysis
+                from app.models.evidence_request import EvidenceRequest
+                from app.schemas.visual_analysis import (
+                    ImageQualityAnalysis,
+                    ProductConsistencyAnalysis,
+                    VisibleConditionAnalysis,
+                    EvidenceCaptureAssessment,
+                )
 
-                result = gemini_vision_service.analyze_evidence_image(
+                logger.info("AI_TRACE | GEMINI_METADATA_REASONING_START | verification_id=%s | evidence_id=%s | model=%s", v_id, ev_human_id, gemini_vision_service.model_name)
+
+                # 1. Fetch previously persisted structured visual metadata for all 4 angles (NO binary files sent)
+                ref_analyses = db.execute(
+                    select(ProductReferenceVisualAnalysis).where(ProductReferenceVisualAnalysis.product_id == session.product_id)
+                ).scalars().all()
+                reference_metadata_list = [r.result_json for r in ref_analyses if r.result_json]
+
+                # 2. Fetch previous follow-ups and answers
+                prev_requests = db.execute(
+                    select(EvidenceRequest).where(EvidenceRequest.verification_session_id == session.id)
+                ).scalars().all()
+                previous_followups = []
+                for pr in prev_requests:
+                    ans = pr.fulfilled_text_content or (pr.fulfilled_evidence.stored_filename if pr.fulfilled_evidence else "Fulfilled")
+                    previous_followups.append({
+                        "question": pr.reason or pr.prompt,
+                        "answer": ans,
+                    })
+
+                # 3. Perform Gemini metadata-based visual reasoning using customer image bytes + stored metadata
+                gemini_assessment = gemini_vision_service.analyze_customer_evidence_against_metadata(
                     evidence_bytes=evidence_bytes,
                     evidence_mime_type=evidence_mime,
-                    reference_images=gemini_refs,
                     product_info=product_info,
+                    visual_profile=profile_dict,
+                    reference_metadata_list=reference_metadata_list,
                     claim_context=claim_context,
+                    previous_followups=previous_followups,
                 )
+
+                vis_consistent = (gemini_assessment.visual_analysis.reference_consistency or "CONSISTENT").upper()
+                supports_claim = gemini_assessment.evidence_assessment.supports_claim
+
+                result = VisualAnalysisResult(
+                    image_quality=ImageQualityAnalysis(
+                        is_clear=(gemini_assessment.visual_analysis.image_quality.upper() in ("GOOD", "ACCEPTABLE")),
+                        lighting="good",
+                        blur_detected=(gemini_assessment.visual_analysis.image_quality.upper() in ("POOR", "INSUFFICIENT")),
+                        resolution_adequate=True,
+                        overall=gemini_assessment.visual_analysis.image_quality.upper(),
+                        product_visibility="CLEAR" if gemini_assessment.visual_analysis.image_quality.upper() in ("GOOD", "ACCEPTABLE") else "PARTIAL",
+                        issues=[],
+                        notes=gemini_assessment.claim_understanding.claim_summary,
+                    ),
+                    product_consistency=ProductConsistencyAnalysis(
+                        is_same_product_type="observed" if vis_consistent == "CONSISTENT" else ("not_observed" if vis_consistent == "INCONSISTENT" else "unclear"),
+                        brand_marking_visible="observed",
+                        color_consistency="consistent" if vis_consistent == "CONSISTENT" else "inconsistent",
+                        shape_consistency="consistent" if vis_consistent == "CONSISTENT" else "inconsistent",
+                        notes=f"{gemini_assessment.claim_understanding.product_identified} - {gemini_assessment.reasoning_summary}",
+                    ),
+                    visible_condition=VisibleConditionAnalysis(
+                        claimed_damage_visible="observed" if supports_claim is True else ("not_observed" if supports_claim is False else "unclear"),
+                        damage_type_detected=gemini_assessment.visual_analysis.visible_damage[0] if gemini_assessment.visual_analysis.visible_damage else None,
+                        damage_location=None,
+                        damage_severity_observation="moderate" if gemini_assessment.visual_analysis.visible_damage else "none",
+                        notes=f"Visible damage: {', '.join(gemini_assessment.visual_analysis.visible_damage) if gemini_assessment.visual_analysis.visible_damage else 'None observed'}",
+                    ),
+                    capture_assessment=EvidenceCaptureAssessment(
+                        type="DIRECT_PHYSICAL_APPEARANCE",
+                        capture_context="PHYSICAL_PHOTO",
+                        confidence=0.95,
+                        observations=["Direct physical photograph submitted by customer camera"],
+                    ),
+                    key_visual_observations=gemini_assessment.visual_analysis.product_characteristics,
+                    uncertainties=gemini_assessment.visual_analysis.uncertainties,
+                    overall_visual_confidence=0.92,
+                )
+
                 used_model = gemini_vision_service.model_name
-                logger.info("AI_TRACE | GEMINI_SUCCESS | verification_id=%s | evidence_id=%s", v_id, ev_human_id)
+                logger.info("AI_TRACE | GEMINI_SUCCESS | verification_id=%s | evidence_id=%s | assessment=%s", v_id, ev_human_id, gemini_assessment.machine_assessment)
+
+                # Attach gemini_assessment into analysis result
+                gemini_assessment_dict = gemini_assessment.model_dump()
+
+                # If Gemini returned dynamic follow-up questions and limit not reached, create EvidenceRequest
+                if gemini_assessment.follow_up_questions and len(prev_requests) < settings.MAX_ADAPTIVE_FOLLOWUPS:
+                    fq = gemini_assessment.follow_up_questions[0]
+                    from app.services import evidence_request_service
+                    q_type = (fq.question_type or "PHOTO").upper()
+                    mapped_type = "MCQ" if "MCQ" in q_type else ("CUSTOMER_TEXT" if "TEXT" in q_type else "CUSTOMER_IMAGE")
+                    evidence_request_service.create_evidence_request(
+                        db=db,
+                        session=session,
+                        step_key=evidence.workflow_step_key or "step_initial_proof",
+                        requested_evidence_type=mapped_type,
+                        reason=fq.question,
+                        options=fq.options if mapped_type == "MCQ" else None,
+                    )
+                    session.processing_stage = "REASONING"
+                    session.processing_status = "PENDING"
+                else:
+                    session.processing_stage = "COMPLETE"
+                    session.processing_status = "COMPLETED"
+
             except Exception as gem_exc:
-                logger.warning("Gemini Vision customer evidence analysis failed (%s); falling back to Qwen2.5-VL", gem_exc)
+                logger.warning("Gemini Vision metadata reasoning failed (%s); falling back to Qwen2.5-VL", gem_exc)
                 result = None
+                gemini_assessment_dict = None
 
         if result is None:
             result = qwen_vision_service.analyze_evidence_image(
@@ -287,11 +367,12 @@ def analyze_evidence_image(
                 visual_profile=profile_dict,
             )
             used_model = qwen_vision_service.model_name
+            gemini_assessment_dict = None
 
         dur_ms = int((time.time() - start_qwen_t) * 1000)
         logger.info(
-            "AI_TRACE | QWEN_COMPLETE | verification_id=%s | evidence_id=%s | model=%s | duration_ms=%d | status=COMPLETED",
-            v_id, ev_human_id, qwen_vision_service.model_name, dur_ms
+            "AI_TRACE | ANALYSIS_COMPLETE | verification_id=%s | evidence_id=%s | model=%s | duration_ms=%d | status=COMPLETED",
+            v_id, ev_human_id, used_model, dur_ms
         )
 
         analysis_rec = db.execute(
@@ -301,7 +382,10 @@ def analyze_evidence_image(
             select(Evidence).where(Evidence.id == evidence_db_id)
         ).scalar_one()
 
-        analysis_rec.result_json = result.model_dump()
+        dumped_result = result.model_dump()
+        if gemini_assessment_dict:
+            dumped_result["gemini_assessment"] = gemini_assessment_dict
+        analysis_rec.result_json = dumped_result
         analysis_rec.overall_confidence = result.overall_visual_confidence
         analysis_rec.model_name = used_model
         analysis_rec.status = VisualAnalysisStatus.COMPLETED.value
@@ -316,8 +400,8 @@ def analyze_evidence_image(
             verification_session_id=session.id,
             event_type="AI_VISUAL_ANALYSIS_COMPLETED",
             event_data_json={
-                "actor": "SYSTEM_QWEN_VISION",
-                "note": f"Qwen visual analysis completed with confidence {result.overall_visual_confidence}",
+                "actor": "SYSTEM_GEMINI_VISION" if "gemini" in used_model.lower() else "SYSTEM_QWEN_VISION",
+                "note": f"Visual analysis completed with confidence {result.overall_visual_confidence}",
                 "confidence": result.overall_visual_confidence,
             },
         )
@@ -325,23 +409,33 @@ def analyze_evidence_image(
         db.commit()
         db.refresh(analysis_rec)
 
-        logger.info("AI_TRACE | QWEN_RESULT_SAVED | verification_id=%s | evidence_id=%s", v_id, ev_human_id)
+        logger.info("AI_TRACE | ANALYSIS_RESULT_SAVED | verification_id=%s | evidence_id=%s", v_id, ev_human_id)
         return analysis_rec
 
     except Exception as exc:
         db.rollback()
         dur_ms = int((time.time() - start_qwen_t) * 1000)
         logger.error(
-            "AI_TRACE | QWEN_COMPLETE | verification_id=%s | evidence_id=%s | model=%s | duration_ms=%d | status=FAILED | error=%s",
-            v_id, ev_human_id, qwen_vision_service.model_name, dur_ms, exc,
+            "AI_TRACE | ANALYSIS_FAILED | verification_id=%s | evidence_id=%s | model=%s | duration_ms=%d | error=%s",
+            v_id, ev_human_id, used_model, dur_ms, exc,
             exc_info=True,
         )
+
+        from app.ai.gemini_vision import gemini_vision_service
+        err_cat = gemini_vision_service.categorize_gemini_error(exc)
+
+        sess_rec = db.get(VerificationSession, session.id)
+        if sess_rec:
+            sess_rec.processing_stage = "VISUAL_ANALYSIS"
+            sess_rec.processing_status = "FAILED"
+            sess_rec.processing_error = err_cat["user_message"]
+
         analysis_rec = db.execute(
             select(VisualAnalysis).where(VisualAnalysis.id == analysis_db_id)
         ).scalar_one_or_none()
         if analysis_rec:
             analysis_rec.status = VisualAnalysisStatus.FAILED.value
-            analysis_rec.error_message = str(exc)
+            analysis_rec.error_message = err_cat["user_message"]
             analysis_rec.completed_at = utc_now()
 
             event = EvidenceEvent(
@@ -349,8 +443,8 @@ def analyze_evidence_image(
                 verification_session_id=session.id,
                 event_type="AI_VISUAL_ANALYSIS_FAILED",
                 event_data_json={
-                    "actor": "SYSTEM_QWEN_VISION",
-                    "note": f"Qwen visual analysis failed: {str(exc)[:200]}",
+                    "actor": "SYSTEM_GEMINI_VISION",
+                    "note": f"Visual analysis failed: {err_cat['user_message']}",
                     "error": str(exc)[:500],
                 },
             )

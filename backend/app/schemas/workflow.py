@@ -112,3 +112,57 @@ class WorkflowResponse(BaseModel):
 class WorkflowReorderRequest(BaseModel):
     """Request schema for reordering all steps within a workflow."""
     step_ids: List[str] = Field(..., min_length=1, description="Ordered list containing all step IDs of the workflow")
+
+
+class WorkflowSaveFullRequest(BaseModel):
+    """Request schema for atomically saving a workflow, its layers, and steps."""
+    workflow_id: Optional[str] = Field(None, description="Existing workflow ID to update, or None to create new")
+    name: str = Field(..., min_length=1, max_length=255, description="Workflow name")
+    description: Optional[str] = Field(None, max_length=2000, description="Workflow description")
+    layers: Dict[str, bool] = Field(default_factory=dict, description="Active verification layer flags")
+    steps: List[WorkflowStepCreateRequest] = Field(default_factory=list, description="Ordered workflow steps")
+    make_active: bool = Field(True, description="Whether to publish and set this workflow as active")
+
+
+class AIGenerateWorkflowRequest(BaseModel):
+    """Context input payload provided to Gemini to generate a tailored workflow."""
+    order_id: Optional[str] = None
+    product_name: str = Field(..., min_length=1, description="Product name")
+    product_sku: Optional[str] = None
+    product_description: Optional[str] = None
+    refund_amount: Optional[float] = None
+    currency: Optional[str] = "INR"
+    refund_reason: str = Field(..., min_length=1, description="Selected primary refund reason")
+    claim_details: Optional[str] = None
+    evidence_requirements: Optional[str] = None
+    existing_layers: Optional[Dict[str, bool]] = None
+
+
+class CustomerQuestionSchema(BaseModel):
+    """Schema for individual customer evidence questions."""
+    id: Optional[str] = None
+    question: str
+    question_type: str = Field("TEXT", description="TEXT, MULTIPLE_CHOICE, PHOTO, or YES_NO")
+    options: Optional[List[str]] = Field(default_factory=list)
+    required: bool = True
+    guidance: Optional[str] = None
+
+
+class ConditionalFollowUpSchema(BaseModel):
+    """Schema for dynamic conditional follow-up triggers."""
+    trigger_condition: str
+    follow_up_question: str
+    response_type: str = "PHOTO"
+    evidence_requirement: Optional[str] = None
+
+
+class AIGeneratedWorkflowResponse(BaseModel):
+    """Strictly validated structured response produced by Gemini AI."""
+    workflow_name: str
+    claim_summary: str
+    verification_steps: List[Dict[str, Any]] = Field(default_factory=list)
+    required_evidence: List[Dict[str, Any]] = Field(default_factory=list)
+    customer_questions: List[CustomerQuestionSchema] = Field(default_factory=list)
+    conditional_follow_ups: List[ConditionalFollowUpSchema] = Field(default_factory=list)
+    enabled_verification_layers: Dict[str, bool] = Field(default_factory=dict)
+    merchant_review_guidance: str

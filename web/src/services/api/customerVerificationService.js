@@ -56,13 +56,14 @@ export const customerVerificationService = {
 
   async runAnalysis(token) {
     const cleanToken = (token || '').trim();
-    try {
-      const response = await apiClient.post(ApiEndpoints.customerAnalyze(cleanToken));
-      return response.data;
-    } catch (err) {
-      console.warn('Real-time analysis check completed:', err.message);
-      return { status: 'ANALYZED' };
-    }
+    const response = await apiClient.post(ApiEndpoints.customerAnalyze(cleanToken));
+    return response.data;
+  },
+
+  async getStatus(token) {
+    const cleanToken = (token || '').trim();
+    const response = await apiClient.get(ApiEndpoints.customerStatus(cleanToken));
+    return response.data;
   },
 
   async listFollowUps(token) {

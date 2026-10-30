@@ -2,7 +2,7 @@
 import logging
 from typing import List
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from app.models.product import Product
@@ -47,13 +47,14 @@ def create_product(db: Session, merchant_id: str, data: ProductCreateRequest) ->
     return product
 
 
-def list_merchant_products(db: Session, merchant_id: str) -> List[Product]:
-    """Retrieve all products owned by the authenticated merchant."""
+def list_merchant_products(db: Session, merchant_id: str, include_archived: bool = False) -> List[Product]:
+    """Retrieve all products owned by the authenticated merchant (active only by default)."""
+    query = select(Product).where(Product.merchant_id == merchant_id)
+    if not include_archived:
+        query = query.where(Product.is_archived == False)
     return list(
         db.execute(
-            select(Product)
-            .where(Product.merchant_id == merchant_id)
-            .order_by(Product.created_at.desc())
+            query.order_by(Product.created_at.desc())
         ).scalars().all()
     )
 
@@ -121,17 +122,50 @@ def update_merchant_product(
     return product
 
 
-def delete_merchant_product(db: Session, merchant_id: str, product_id: str) -> None:
-    """Delete a merchant's product and cleanup all associated reference image files."""
+def delete_merchant_product(db: Session, merchant_id: str, product_id: str) -> dict:
+    """Delete a merchant's product and cleanup all associated reference image files safely.
+    
+    If historical verification sessions reference this product, archive it to protect
+    historical verification records, customer evidence, and audit integrity.
+    If unreferenced, hard delete cleanly.
+    """
     product = get_merchant_product(db, merchant_id, product_id)
 
-    # Remove all physical reference image files from disk
+    from app.models.verification import VerificationSession
+    session_count = db.execute(
+        select(func.count()).select_from(VerificationSession).where(VerificationSession.product_id == product.id)
+    ).scalar() or 0
+
+    if session_count > 0:
+        # Soft delete / archive to protect historical verification records
+        product.is_archived = True
+        db.commit()
+        logger.info(
+            "Product %s has %d historical verification session(s). Archived product to preserve historical audits for merchant %s",
+            product_id, session_count, merchant_id,
+        )
+        return {
+            "status": "archived",
+            "message": f"Product '{product.name}' archived to preserve {session_count} historical verification record(s)",
+            "product_id": product_id,
+        }
+
+    # No historical sessions reference this product: remove physical reference image files
     for ref in product.references:
-        delete_reference_file(ref.image_path)
+        if ref.image_path:
+            try:
+                delete_reference_file(ref.image_path)
+            except Exception as exc:
+                logger.warning("Could not delete reference file %s: %s", ref.image_path, exc)
 
     db.delete(product)
     db.commit()
     logger.info("Deleted product %s and associated reference files for merchant %s", product_id, merchant_id)
+    return {
+        "status": "deleted",
+        "message": f"Product '{product.name}' and all associated reference baselines deleted successfully",
+        "product_id": product_id,
+    }
 
 
 def get_product_completeness(

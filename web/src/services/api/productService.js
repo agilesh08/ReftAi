@@ -1,7 +1,6 @@
 import apiClient from './apiClient';
 import { ApiEndpoints } from '../../constants/apiEndpoints';
 import { referenceService } from './referenceService';
-import { initialProducts } from '../mockData/initialProducts';
 
 export const productService = {
   async listProducts() {
@@ -10,10 +9,11 @@ export const productService = {
       if (Array.isArray(response.data)) {
         return response.data.map(normalizeProduct);
       }
+      return [];
     } catch (err) {
-      console.warn('API listProducts fallback to local mock:', err.message);
+      console.warn('API listProducts error:', err.message);
+      return [];
     }
-    return initialProducts.map(normalizeProduct);
   },
 
   async getProduct(productId) {
@@ -26,12 +26,12 @@ export const productService = {
       const response = await apiClient.get(ApiEndpoints.productCompleteness(productId));
       return response.data;
     } catch (err) {
-      console.warn('API getProductCompleteness fallback:', err.message);
+      console.warn('API getProductCompleteness error:', err.message);
       return {
         product_id: productId,
-        reference_count: 4,
-        is_ready: true,
-        missing_angles: [],
+        reference_count: 0,
+        is_ready: false,
+        missing_angles: ['FRONT', 'BACK', 'LEFT', 'RIGHT'],
       };
     }
   },
@@ -44,23 +44,8 @@ export const productService = {
       price: parseFloat(productData.price) || 0.0,
     };
 
-    try {
-      const response = await apiClient.post(ApiEndpoints.products, payload);
-      return normalizeProduct(response.data);
-    } catch (err) {
-      console.warn('API addProduct fallback:', err.message);
-      const mock = {
-        id: `prod-${Date.now()}`,
-        name: payload.name,
-        sku: payload.sku,
-        description: payload.description,
-        price: payload.price,
-        reference_count: 0,
-        is_ready: false,
-        reference_processing_status: 'NOT_READY',
-      };
-      return normalizeProduct(mock);
-    }
+    const response = await apiClient.post(ApiEndpoints.products, payload);
+    return normalizeProduct(response.data);
   },
 
   async updateProduct(productId, productData) {

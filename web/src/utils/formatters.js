@@ -1,8 +1,13 @@
 // Formatting utility functions matching Flutter's intl and custom formatting
 
 export function formatCurrency(amount) {
-  if (amount === undefined || amount === null || isNaN(amount)) return '₹0.00';
-  return `₹${Number(amount).toFixed(2)}`;
+  if (amount === undefined || amount === null || isNaN(Number(amount))) return '₹0.00';
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(amount));
 }
 
 export function formatDate(dateString) {

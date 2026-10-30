@@ -45,6 +45,8 @@ web/.cache/
 *.db-shm
 *.sqlite
 *.sqlite3
+*.bak
+*.bak*
 data/*.db
 data/*.sqlite
 backend/data/*.db

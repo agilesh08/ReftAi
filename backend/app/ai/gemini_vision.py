@@ -278,6 +278,42 @@ class GeminiVisionService:
         result = VisualAnalysisResult.model_validate_json(response.text)
         return result
 
+    @staticmethod
+    def categorize_gemini_error(exc: Exception) -> Dict[str, str]:
+        """Categorize Gemini API exceptions into clear user-facing failure types."""
+        exc_str = str(exc)
+        exc_upper = exc_str.upper()
+
+        if any(m in exc_upper for m in ("401", "UNAUTHENTICATED", "API_KEY_INVALID", "INVALID_API_KEY", "PERMISSION_DENIED")):
+            return {
+                "error_code": "INVALID_API_KEY",
+                "user_message": "AI verification failed because the configured AI credentials are invalid.",
+                "detail": exc_str,
+            }
+        if any(m in exc_upper for m in ("429", "RESOURCE_EXHAUSTED", "RATE_LIMIT", "QUOTA")):
+            return {
+                "error_code": "RATE_LIMIT",
+                "user_message": "AI verification is temporarily unavailable due to rate limits. Please try again in a few moments.",
+                "detail": exc_str,
+            }
+        if any(m in exc_upper for m in ("TIMEOUT", "DEADLINE_EXCEEDED", "TIMED OUT")):
+            return {
+                "error_code": "TIMEOUT",
+                "user_message": "AI analysis is taking longer than expected. You can retry verification.",
+                "detail": exc_str,
+            }
+        if any(m in exc_upper for m in ("DECODE", "INVALID_IMAGE", "CORRUPT", "UNSUPPORTED_MIME", "BAD_REQUEST")):
+            return {
+                "error_code": "IMAGE_PROCESSING_FAILED",
+                "user_message": "Unable to analyze the submitted image. Please capture another clear photograph.",
+                "detail": exc_str,
+            }
+        return {
+            "error_code": "UNKNOWN_ERROR",
+            "user_message": f"AI verification encountered an unexpected issue: {exc_str[:120]}",
+            "detail": exc_str,
+        }
+
     def analyze_reference_image(
         self,
         image_bytes: bytes,
@@ -286,21 +322,34 @@ class GeminiVisionService:
         mime_type: str = "image/jpeg",
     ):
         """Perform multimodal visual analysis on a single merchant reference angle using Gemini Vision."""
-        from app.schemas.product_reference_analysis import ProductReferenceAnalysisResult
+        from datetime import datetime, timezone
+        from app.schemas.product_reference_analysis import ProductReferenceAnalysisResult, ReferenceImageVisualMetadata
 
         client = self.get_client()
+        norm_angle = angle.upper()
 
         prompt = (
             f"=== GEMINI VISION REFERENCE IMAGE ANALYSIS ({self.prompt_version}) ===\n"
             f"TASK: Extract comprehensive structured visual metadata from this authentic merchant baseline photo.\n\n"
             f"--- PRODUCT SPECIFICATION ---\n"
+            f"Product ID: {product_info.get('id', 'Unknown')}\n"
             f"Name: {product_info.get('name', 'Unknown')}\n"
             f"SKU: {product_info.get('sku', 'Unknown')}\n"
             f"Category: {product_info.get('category', 'Unknown')}\n"
             f"Description: {product_info.get('description', 'None')}\n"
-            f"Canonical Angle: {angle.upper()}\n\n"
-            f"Analyze shape, proportions, primary/secondary colors, materials, distinctive features, buttons/ports, logos, visible text, and condition.\n"
-            f"Return strictly valid JSON adhering to the schema."
+            f"Canonical Angle: {norm_angle}\n\n"
+            f"Analyze and extract structured visual metadata:\n"
+            f"1. Main object description and visible product identity\n"
+            f"2. Shape and geometry (silhouette, contours, curvature)\n"
+            f"3. Color and finish (primary/secondary colors, matte/gloss finish)\n"
+            f"4. Materials and textures (plastic, aluminum, glass, leather, mesh)\n"
+            f"5. Distinctive physical features (seams, joints, hinges, bezels)\n"
+            f"6. Visible buttons, ports, labels, and components\n"
+            f"7. Component placement and layout\n"
+            f"8. Expected physical condition (NEW / PRISTINE)\n"
+            f"9. Angle-specific visual characteristics\n"
+            f"10. Notable landmarks and any uncertainties/limitations\n\n"
+            f"Return strictly valid JSON matching the schema."
         )
 
         contents = [
@@ -343,7 +392,241 @@ class GeminiVisionService:
         if not response.text:
             raise RuntimeError("Gemini Vision returned empty text response for reference image")
 
-        return ProductReferenceAnalysisResult.model_validate_json(response.text)
+        result = ProductReferenceAnalysisResult.model_validate_json(response.text)
+        # Ensure priority metadata fields are populated
+        result.metadata.product_id = str(product_info.get("id") or "")
+        result.metadata.reference_angle = norm_angle
+        result.metadata.orientation_angle = norm_angle
+        result.metadata.model_name = self.model_name
+        result.metadata.analysis_timestamp = datetime.now(timezone.utc).isoformat()
+        result.metadata.processing_status = "COMPLETED"
+        result.metadata.metadata_schema_version = "v2.0"
+        if not result.metadata.main_object_description:
+            result.metadata.main_object_description = result.metadata.visible_product_identity or product_info.get("name", "")
+        if not result.metadata.shape_and_geometry:
+            result.metadata.shape_and_geometry = result.metadata.shape or "standard product geometry"
+        if not result.metadata.color_and_finish:
+            result.metadata.color_and_finish = result.metadata.color or "standard color and finish"
+        if not result.metadata.materials_and_textures:
+            result.metadata.materials_and_textures = result.metadata.material or "standard materials"
+        if not result.metadata.distinctive_physical_features and result.metadata.distinctive_features:
+            result.metadata.distinctive_physical_features = result.metadata.distinctive_features
+        if not result.metadata.visible_buttons_ports_labels and result.metadata.buttons_ports_components:
+            result.metadata.visible_buttons_ports_labels = result.metadata.buttons_ports_components
+        if not result.metadata.expected_physical_condition:
+            result.metadata.expected_physical_condition = result.metadata.physical_condition or "NEW"
+
+        return result
+
+    def consolidate_product_visual_profile(
+        self,
+        product_info: Dict[str, Any],
+        reference_analyses: List[Dict[str, Any]],
+    ):
+        """Consolidate the 4 structured reference image visual metadata records into a ProductVisualProfileResult using Gemini."""
+        import json
+        from app.schemas.product_reference_analysis import ProductVisualProfileResult
+
+        client = self.get_client()
+
+        system_instruction = (
+            "You are the Product Visual Profile Consolidation Engine for an evidence verification platform.\n"
+            "Your task is to synthesize individual visual metadata records from the 4 canonical reference angles (FRONT, BACK, LEFT, RIGHT) "
+            "into a single consolidated Product Visual Profile.\n\n"
+            "STRICT RULES:\n"
+            "1. Do NOT invent physical features or markings not present in the input reference metadata.\n"
+            "2. Establish angle-specific visual expectations for FRONT, BACK, LEFT, and RIGHT.\n"
+            "3. Identify distinguishing visual landmarks for forensic comparison against customer evidence.\n"
+            "4. Return strictly valid JSON containing these exact fields:\n"
+            "  - canonical_product_name (string)\n"
+            "  - brand (string)\n"
+            "  - model (string)\n"
+            "  - category (string)\n"
+            "  - primary_colors (list of strings)\n"
+            "  - materials_finish (list of strings)\n"
+            "  - key_design_features (list of strings)\n"
+            "  - angle_specific_expectations (object with keys FRONT, BACK, LEFT, RIGHT mapping to descriptions)\n"
+            "  - visible_identifiers_and_text (list of strings)\n"
+            "  - distinguishing_landmarks (list of strings)\n"
+            "  - packaging_characteristics (string or null)\n"
+            "  - known_limitations_uncertainties (list of strings)\n"
+            "  - provenance_summary (object mapping angle keys to lists of features established by that angle)"
+        )
+
+        user_content = (
+            f"=== PRODUCT CATALOG INFORMATION ===\n"
+            f"Product ID: {product_info.get('id', 'Unknown')}\n"
+            f"Name: {product_info.get('name', 'Unknown')}\n"
+            f"SKU: {product_info.get('sku', 'Unknown')}\n"
+            f"Category: {product_info.get('category', 'Unknown')}\n"
+            f"Description: {product_info.get('description', 'None')}\n\n"
+            f"=== STRUCTURED VISUAL METADATA FROM 4 CANONICAL ANGLES ===\n"
+            f"{json.dumps(reference_analyses, indent=2, default=str)}\n\n"
+            f"Consolidate these observations into a comprehensive Product Visual Profile adhering strictly to the JSON schema."
+        )
+
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=0.1,
+            response_mime_type="application/json",
+        )
+
+        models_to_try = [self.model_name, "gemini-flash-lite-latest", "gemini-2.5-flash"]
+        response = None
+        last_exc = None
+        for m in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=m,
+                    contents=user_content,
+                    config=config,
+                )
+                self.model_name = m
+                break
+            except Exception as exc:
+                if self._is_auth_error(exc):
+                    raise ValueError(f"Gemini authentication failed: {exc}") from exc
+                logger.warning("Gemini visual profile consolidation model %s failed: %s", m, exc)
+                last_exc = exc
+
+        if response is None or not response.text:
+            raise last_exc or RuntimeError("Failed to consolidate Product Visual Profile with Gemini")
+
+        return ProductVisualProfileResult.model_validate_json(response.text)
+
+    def analyze_customer_evidence_against_metadata(
+        self,
+        evidence_bytes: bytes,
+        evidence_mime_type: str,
+        product_info: Dict[str, Any],
+        visual_profile: Optional[Dict[str, Any]],
+        reference_metadata_list: List[Dict[str, Any]],
+        claim_context: Dict[str, Any],
+        previous_followups: Optional[List[Dict[str, Any]]] = None,
+    ):
+        """Analyze customer evidence image directly against stored product visual metadata using Gemini.
+
+        CRITICAL ARCHITECTURAL CONSTRAINTS:
+        - Receives the customer's actual live image bytes (never just URL or filename).
+        - Receives stored structured reference metadata (NO raw reference images re-sent).
+        - Reasons about the customer claim, comparing customer photo to stored profile.
+        - Returns structured GeminiVerificationAssessment validated with Pydantic.
+        """
+        import json
+        from app.schemas.verification_reasoning import GeminiVerificationAssessment
+
+        client = self.get_client()
+
+        system_instruction = (
+            "You are the Lead Visual Evidence Verification & Reasoning Engine for Reft.AI.\n"
+            "Your task is to compare customer-submitted evidence images against the merchant's stored canonical visual metadata profile "
+            "and reason about the customer's refund claim.\n\n"
+            "STRICT CONSTRAINTS & BEHAVIORAL RULES:\n"
+            "1. DO NOT make refund approval or rejection decisions. The merchant makes the final decision.\n"
+            "2. DO NOT make any accusations of fraud, deception, dishonesty, or malice. Never use words like 'fraud', 'scam', 'fake', or 'deceptive'.\n"
+            "3. Objective, factual observations only.\n"
+            "4. Epistemic uncertainty:\n"
+            "   - 'observed': Clearly and unambiguously visible in customer evidence.\n"
+            "   - 'not_observed': Relevant area is in frame and clear, but reported defect/feature is absent.\n"
+            "   - 'not_visible': Relevant area or angle is occluded, cropped, or out of frame.\n"
+            "   - 'unclear': In frame but lighting, glare, low resolution, or angle makes it ambiguous.\n"
+            "5. CLAIM-AWARE REASONING:\n"
+            "   - If customer reports 'Wrong Product Received': a visual mismatch with the merchant profile SUPPORTS the customer's claim! Do not treat a mismatch as fraud.\n"
+            "   - If customer reports 'Damaged on Arrival': verify if the reported damage is visibly present at the described location.\n"
+            "   - If customer reports 'Missing Items/Parts': check if components are present or absent.\n"
+            "6. DYNAMIC FOLLOW-UP STRATEGY:\n"
+            "   - If key areas are occluded or glare prevents verifying damage, generate targeted follow_up_questions (PHOTO, MCQ, or TEXT).\n"
+            "   - If damage is clear and sufficient, follow_up_questions can be empty.\n"
+            "7. MACHINE ASSESSMENT STATUS:\n"
+            "   - 'EVIDENCE_CONSISTENT': Evidence clearly supports the claim with no major contradictions.\n"
+            "   - 'REVIEW_REQUIRED': Partial evidence, ambiguous lighting, or human merchant review needed.\n"
+            "   - 'INCONSISTENCY_DETECTED': Direct visual contradiction with claim or stored baseline (e.g. pristine condition claimed as shattered).\n"
+            "8. Return strictly valid JSON adhering to the schema."
+        )
+
+        intro = [
+            f"=== GEMINI CUSTOMER EVIDENCE REASONING ({self.prompt_version}) ===",
+            "TASK: Evaluate the customer's submitted photograph against the stored product visual metadata and reason about their claim.",
+            "",
+            "--- MERCHANT PRODUCT SPECIFICATION ---",
+            f"Product Name: {product_info.get('name', 'Unknown')}",
+            f"SKU: {product_info.get('sku', 'Unknown')}",
+            f"Category: {product_info.get('category', 'Unknown')}",
+            f"Description: {product_info.get('description', 'None')}",
+            "",
+            "--- CUSTOMER REFUND CLAIM ---",
+            f"Order ID: {claim_context.get('order_id', 'Unknown')}",
+            f"Customer Name: {claim_context.get('customer_name', 'Customer')}",
+            f"Reported Refund Reason: {claim_context.get('refund_reason', 'Product defect or damage')}",
+            f"Customer Explanation / Notes: {claim_context.get('customer_notes', 'None provided')}",
+            f"Workflow Step Key: {claim_context.get('workflow_step_key', 'step_initial_proof')}",
+            "",
+        ]
+
+        if previous_followups:
+            intro.append("--- PREVIOUS CUSTOMER FOLLOW-UPS & ANSWERS ---")
+            for prev in previous_followups:
+                intro.append(f"Q: {prev.get('question', '')} | Answer: {prev.get('answer', '')}")
+            intro.append("")
+
+        intro.append("--- STORED CANONICAL PRODUCT VISUAL PROFILE ---")
+        if visual_profile:
+            intro.append(json.dumps(visual_profile, indent=2, default=str))
+        else:
+            intro.append("Consolidated visual profile pending; refer to reference angle metadata below.")
+        intro.append("")
+
+        if reference_metadata_list:
+            intro.append("--- STORED REFERENCE ANGLE VISUAL METADATA ---")
+            for ref_meta in reference_metadata_list:
+                angle_label = ref_meta.get("angle") or ref_meta.get("reference_angle") or "CANONICAL_ANGLE"
+                intro.append(f"[METADATA FOR ANGLE: {angle_label}]")
+                intro.append(json.dumps(ref_meta, indent=2, default=str))
+            intro.append("")
+
+        intro.append("--- CUSTOMER SUBMITTED LIVE EVIDENCE IMAGE ---")
+        intro.append("Analyze the attached customer image bytes against the stored visual metadata above:")
+
+        contents = [
+            "\n".join(intro),
+            types.Part.from_bytes(data=evidence_bytes, mime_type=evidence_mime_type),
+            (
+                "\nPerform deep visual inspection and claim reasoning. Compare the customer's photo against the stored product visual profile. "
+                "Assess visible damage, product characteristics, consistency, and whether the evidence supports the claim. "
+                "Produce dynamic follow-up questions only if critical areas are occluded or ambiguous. "
+                "Output strictly adhering to the JSON schema."
+            ),
+        ]
+
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=0.2,
+            response_mime_type="application/json",
+            response_schema=GeminiVerificationAssessment,
+        )
+
+        models_to_try = [self.model_name, "gemini-flash-lite-latest", "gemini-2.5-flash"]
+        response = None
+        last_exc = None
+        for m in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=m,
+                    contents=contents,
+                    config=config,
+                )
+                self.model_name = m
+                break
+            except Exception as exc:
+                if self._is_auth_error(exc):
+                    raise ValueError(f"Gemini authentication failed: {exc}") from exc
+                logger.warning("Gemini customer evidence reasoning model %s failed: %s", m, exc)
+                last_exc = exc
+
+        if response is None or not response.text:
+            raise last_exc or RuntimeError("All Gemini customer reasoning model candidates failed")
+
+        return GeminiVerificationAssessment.model_validate_json(response.text)
 
 
 # Global singleton service instance

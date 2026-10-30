@@ -326,6 +326,21 @@ def get_customer_fusion(
 # Customer Live Analysis & Completion Endpoints
 # ---------------------------------------------------------------------------
 
+@router.get(
+    "/{token}/status",
+    status_code=status.HTTP_200_OK,
+    summary="Get customer verification processing stage and real-time status",
+)
+def get_public_verification_status(
+    token: str,
+    db: Session = Depends(get_db),
+):
+    """Retrieve actual backend processing stage (EVIDENCE_UPLOAD, QUEUED, VISUAL_ANALYSIS, REASONING, COMPLETE)
+    and status (PENDING, PROCESSING, COMPLETED, FAILED, RETRY_REQUIRED).
+    """
+    return public_verification_service.get_customer_session_status(db=db, raw_token=token)
+
+
 @router.post(
     "/{token}/analyze",
     status_code=status.HTTP_200_OK,

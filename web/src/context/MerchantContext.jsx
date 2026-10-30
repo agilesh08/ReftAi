@@ -91,9 +91,31 @@ export function MerchantProvider({ children }) {
     return newProd;
   };
 
+  const deleteProduct = async (productId) => {
+    const res = await productService.deleteProduct(productId);
+    await refreshData();
+    return res;
+  };
+
   const updateProductReferences = async (productId, updates) => {
     // If uploading canonical angles
     await refreshData();
+  };
+
+  const saveWorkflow = async (payload) => {
+    const saved = await merchantService.saveFullWorkflow(payload);
+    await refreshData();
+    return saved;
+  };
+
+  const activateWorkflow = async (id) => {
+    const act = await merchantService.activateWorkflow(id);
+    await refreshData();
+    return act;
+  };
+
+  const generateAiWorkflow = async (claimData) => {
+    return await merchantService.generateAiWorkflow(claimData);
   };
 
   return (
@@ -113,7 +135,11 @@ export function MerchantProvider({ children }) {
         deleteSession,
         updateDecision,
         addProduct,
+        deleteProduct,
         updateProductReferences,
+        saveWorkflow,
+        activateWorkflow,
+        generateAiWorkflow,
       }}
     >
       {children}

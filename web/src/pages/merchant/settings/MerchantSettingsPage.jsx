@@ -19,6 +19,8 @@ import { useAuth } from '../../../context/AuthContext';
 import { useServerConfig } from '../../../context/ServerConfigContext';
 import { MerchantHeader } from '../../../components/common/MerchantHeader';
 
+import { apiClient } from '../../../services/api/apiClient';
+
 export function MerchantSettingsPage() {
   const navigate = useNavigate();
   const { products } = useMerchant();
@@ -36,11 +38,11 @@ export function MerchantSettingsPage() {
     setTestingConnection(true);
     setConnectionStatus(null);
     try {
-      // Simulate ping to backend URL or mock
-      await new Promise((r) => setTimeout(r, 600));
-      setConnectionStatus({ success: true, message: 'Backend reachable & healthy (HTTP 200 OK)' });
+      const response = await apiClient.get('/api/v1/health');
+      const statusText = response.data?.status || 'healthy';
+      setConnectionStatus({ success: true, message: `Backend reachable & ${statusText} (HTTP 200 OK)` });
     } catch (e) {
-      setConnectionStatus({ success: false, message: 'Could not connect to backend server' });
+      setConnectionStatus({ success: false, message: e.message || 'Could not connect to backend server' });
     } finally {
       setTestingConnection(false);
     }
@@ -79,8 +81,10 @@ export function MerchantSettingsPage() {
               <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
                 Merchant Store
               </span>
-              <span className="font-bold text-slate-800 text-sm">{merchant?.name || 'Apex Electronics'}</span>
-              <span className="text-slate-500 block text-[11px] mt-0.5">ID: MERCH-89410</span>
+              <span className="font-bold text-slate-800 text-sm">{merchant?.business_name || merchant?.businessName || merchant?.name || 'Registered Store'}</span>
+              <span className="text-slate-500 block text-[11px] mt-0.5">
+                {merchant?.id ? `ID: ${String(merchant.id).substring(0, 14)}...` : 'ID: Registered Merchant'}
+              </span>
             </div>
 
             <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">

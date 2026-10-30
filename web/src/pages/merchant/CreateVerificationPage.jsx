@@ -4,7 +4,7 @@ import {
   ArrowLeft,
   Package,
   User,
-  DollarSign,
+  IndianRupee,
   AlertCircle,
   CheckCircle2,
   Plus,
@@ -25,6 +25,7 @@ import { QuickAddProductDialog } from '../../components/merchant/QuickAddProduct
 import { productService } from '../../services/api/productService';
 import { referenceService } from '../../services/api/referenceService';
 import { ImageViewerDialog } from '../../components/common/ImageViewerDialog';
+import { GeminiWorkflowGeneratorDialog } from '../../components/merchant/GeminiWorkflowGeneratorDialog';
 
 const REFUND_REASONS = [
   'Damaged on arrival',
@@ -45,32 +46,90 @@ const CANONICAL_ANGLES = [
 
 export function CreateVerificationPage() {
   const navigate = useNavigate();
-  const { products, workflows, createVerification, addProduct } = useMerchant();
+  const {
+    products,
+    workflows,
+    createVerification,
+    addProduct,
+    saveWorkflow,
+    activateWorkflow,
+    generateAiWorkflow,
+  } = useMerchant();
 
   // Form states
   const [orderId, setOrderId] = useState(`ORD-${Math.floor(10000 + Math.random() * 90000)}`);
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
-  const [refundAmount, setRefundAmount] = useState('49.99');
+  const [refundAmount, setRefundAmount] = useState('2499.00');
   const [reason, setReason] = useState(REFUND_REASONS[0]);
   const [customReason, setCustomReason] = useState('');
+  const [claimNotes, setClaimNotes] = useState('');
   const [selectedProductId, setSelectedProductId] = useState(products[0]?.id || '');
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(workflows[0]?.id || '');
   const [maxAttempts, setMaxAttempts] = useState(3);
   const [requireCameraOnly, setRequireCameraOnly] = useState(true);
 
+  // Gemini AI modal & workflow persistence state
+  const [isGeminiModalOpen, setIsGeminiModalOpen] = useState(false);
+  const [isSavingWorkflow, setIsSavingWorkflow] = useState(false);
+  const [workflowSaveMessage, setWorkflowSaveMessage] = useState(null);
+
+  const activeProducts = products.filter((p) => !p.is_archived);
+
   React.useEffect(() => {
-    if (!selectedProductId && products.length > 0) {
-      setSelectedProductId(products[0].id);
+    if (!selectedProductId && activeProducts.length > 0) {
+      setSelectedProductId(activeProducts[0].id);
     }
-  }, [products, selectedProductId]);
+  }, [activeProducts, selectedProductId]);
 
   React.useEffect(() => {
     if (!selectedWorkflowId && workflows.length > 0) {
-      const activeWf = workflows.find((w) => w.status === 'ACTIVE') || workflows[0];
+      const activeWf = workflows.find((w) => w.status === 'ACTIVE' || w.is_active) || workflows[0];
       setSelectedWorkflowId(activeWf.id);
     }
   }, [workflows, selectedWorkflowId]);
+
+  const handleSaveSelectedWorkflow = async () => {
+    setIsSavingWorkflow(true);
+    setWorkflowSaveMessage(null);
+    try {
+      if (selectedWorkflowId) {
+        const act = await activateWorkflow(selectedWorkflowId);
+        setWorkflowSaveMessage({
+          success: true,
+          text: `Workflow '${act.name}' saved and set as Active in SQLite database.`,
+        });
+      } else {
+        const saved = await saveWorkflow({
+          name: 'Standard 7-Layer Verification',
+          description: 'Standard multi-layer verification with camera-first evidence, AI screening, and customer questionnaire.',
+          layers: {
+            cameraFirst: requireCameraOnly,
+            aiAuthenticity: true,
+            geolocation: true,
+            carrierDelivery: true,
+            aiFollowUps: true,
+            productReference: true,
+            customQuestions: true,
+          },
+          make_active: true,
+        });
+        setSelectedWorkflowId(saved.id);
+        setWorkflowSaveMessage({
+          success: true,
+          text: `Workflow '${saved.name}' created and set as Active in SQLite database.`,
+        });
+      }
+    } catch (err) {
+      setWorkflowSaveMessage({
+        success: false,
+        text: err.response?.data?.detail || err.message || 'Failed to save workflow',
+      });
+    } finally {
+      setIsSavingWorkflow(false);
+      setTimeout(() => setWorkflowSaveMessage(null), 5000);
+    }
+  };
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -88,7 +147,7 @@ export function CreateVerificationPage() {
   const [selectedPreview, setSelectedPreview] = useState(null);
 
   // Selected product reference readiness check synchronized with backend
-  const selectedProduct = products.find((p) => p.id === selectedProductId);
+  const selectedProduct = activeProducts.find((p) => p.id === selectedProductId);
 
   React.useEffect(() => {
     if (!selectedProductId) {
@@ -271,10 +330,10 @@ export function CreateVerificationPage() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Requested Refund Amount ($) <span className="text-red-500">*</span>
+                  Requested Refund Amount (₹) <span className="text-red-500">*</span>
                 </label>
                 <div className="relative">
-                  <DollarSign className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <IndianRupee className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="number"
                     step="0.01"
@@ -320,6 +379,22 @@ export function CreateVerificationPage() {
                 />
               </div>
             )}
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Reported Defect & Claim Details (Optional)
+              </label>
+              <textarea
+                rows={2}
+                placeholder="e.g. Customer reports left earcup is physically cracked and noise cancellation not working..."
+                value={claimNotes}
+                onChange={(e) => setClaimNotes(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-primary placeholder-slate-400"
+              />
+              <span className="text-[10px] text-slate-400 block mt-0.5">
+                These notes will directly inform the Gemini AI workflow generator.
+              </span>
+            </div>
           </div>
 
           {/* Section 2: Customer Information */}
@@ -377,9 +452,9 @@ export function CreateVerificationPage() {
             </div>
 
             {/* Product Selector Dropdown */}
-            {products.length === 0 ? (
+            {activeProducts.length === 0 ? (
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-center">
-                <p className="text-xs text-slate-600 mb-2">No products found in your catalog.</p>
+                <p className="text-xs text-slate-600 mb-2">No active products found in your catalog.</p>
                 <button
                   type="button"
                   onClick={() => setIsQuickAddOpen(true)}
@@ -398,7 +473,7 @@ export function CreateVerificationPage() {
                   onChange={(e) => setSelectedProductId(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-primary font-medium"
                 >
-                  {products.map((p) => {
+                  {activeProducts.map((p) => {
                     const count = p.referenceAnglesCount ?? p.reference_angles_count ?? 0;
                     const status = (p.referenceStatus || p.reference_processing_status || 'NOT_READY').toUpperCase();
                     return (
@@ -570,9 +645,20 @@ export function CreateVerificationPage() {
 
           {/* Section 4: Workflow & Verification Layers */}
           <div className="bg-white p-6 rounded-2xl border border-appBorder shadow-sm space-y-4">
-            <div className="flex items-center gap-2 border-b border-appBorder pb-3">
-              <Sparkles className="w-4 h-4 text-primary" />
-              <h2 className="text-sm font-bold text-darkNeutral">4. Verification Flow Configuration</h2>
+            <div className="flex items-center justify-between border-b border-appBorder pb-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-primary" />
+                <h2 className="text-sm font-bold text-darkNeutral">4. Verification Flow Configuration</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsGeminiModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-bold shadow-sm transition-all cursor-pointer hover:shadow"
+                title="Generate claim-aware verification workflow using Gemini AI"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+                <span>✦ Generate with Gemini</span>
+              </button>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -585,12 +671,42 @@ export function CreateVerificationPage() {
                   onChange={(e) => setSelectedWorkflowId(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-primary font-medium"
                 >
-                  {workflows.map((wf) => (
-                    <option key={wf.id} value={wf.id}>
-                      {wf.name} ({wf.steps?.length || 4} steps)
-                    </option>
-                  ))}
+                  {workflows.length === 0 && (
+                    <option value="">Standard Verification Flow (Default)</option>
+                  )}
+                  {workflows.map((wf) => {
+                    const isActive = wf.status === 'ACTIVE' || wf.is_active;
+                    return (
+                      <option key={wf.id} value={wf.id}>
+                        {wf.name} {isActive ? '★ [ACTIVE]' : ''} ({wf.steps?.length || 4} steps)
+                      </option>
+                    );
+                  })}
                 </select>
+                <div className="flex items-center gap-2 mt-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveSelectedWorkflow}
+                    disabled={isSavingWorkflow}
+                    className="px-2.5 py-1 rounded-lg border border-primary/30 text-primary hover:bg-primary/5 text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    {isSavingWorkflow ? (
+                      <div className="w-3 h-3 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    )}
+                    <span>Save Selection as Active</span>
+                  </button>
+                  {workflowSaveMessage && (
+                    <span
+                      className={`text-[10px] font-semibold ${
+                        workflowSaveMessage.success ? 'text-emerald-600' : 'text-rose-600'
+                      }`}
+                    >
+                      {workflowSaveMessage.text}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div>
@@ -605,6 +721,9 @@ export function CreateVerificationPage() {
                   onChange={(e) => setMaxAttempts(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-primary font-medium"
                 />
+                <span className="text-[10px] text-slate-400 block mt-1">
+                  Controls dynamic AI follow-up iteration rounds if evidence is ambiguous.
+                </span>
               </div>
             </div>
 
@@ -681,6 +800,32 @@ export function CreateVerificationPage() {
           onProductCreated={handleQuickAddProduct}
         />
       )}
+
+      {/* Gemini AI Claim-Aware Workflow Generator Dialog */}
+      <GeminiWorkflowGeneratorDialog
+        isOpen={isGeminiModalOpen}
+        onClose={() => setIsGeminiModalOpen(false)}
+        orderId={orderId}
+        refundAmount={refundAmount}
+        reason={reason === 'Other' ? customReason : reason}
+        claimNotes={claimNotes}
+        customerInfo={{ name: customerName, email: customerEmail }}
+        selectedProduct={selectedProduct}
+        productReferenceStatus={
+          isProductReferenceReady
+            ? 'Verified (4/4 Canonical Angles Ready)'
+            : `Partial (${activeRefCount}/4 Ready)`
+        }
+        onWorkflowApplied={(savedWf) => {
+          if (savedWf && savedWf.id) {
+            setSelectedWorkflowId(savedWf.id);
+          }
+          setWorkflowSaveMessage({
+            success: true,
+            text: `Workflow "${savedWf?.name || 'Generated'}" applied & persisted as Active in SQLite database!`,
+          });
+        }}
+      />
     </div>
   );
 }

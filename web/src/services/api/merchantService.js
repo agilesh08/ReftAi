@@ -70,6 +70,21 @@ export const merchantService = {
     const response = await apiClient.post(ApiEndpoints.workflowPublish(wfId));
     return response.data;
   },
+
+  async generateAiWorkflow(claimData) {
+    const response = await apiClient.post('/api/v1/workflows/generate-ai', claimData);
+    return response.data;
+  },
+
+  async saveFullWorkflow(payload) {
+    const response = await apiClient.post('/api/v1/workflows/save-full', payload);
+    return response.data;
+  },
+
+  async activateWorkflow(wfId) {
+    const response = await apiClient.post(`/api/v1/workflows/${wfId}/activate`);
+    return response.data;
+  },
 };
 
 export function normalizeInvestigationDetail(data) {

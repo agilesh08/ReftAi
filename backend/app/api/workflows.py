@@ -14,10 +14,72 @@ from app.schemas.workflow import (
     WorkflowStepUpdateRequest,
     WorkflowStepResponse,
     WorkflowReorderRequest,
+    WorkflowSaveFullRequest,
+    AIGenerateWorkflowRequest,
+    AIGeneratedWorkflowResponse,
 )
 from app.services import workflow_service, workflow_step_service
+from app.ai.gemini_workflow import gemini_workflow_service
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Gemini AI Workflow Generation & Full Persistence Endpoints
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/generate-ai",
+    response_model=AIGeneratedWorkflowResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Generate tailored verification workflow using Google Gemini AI",
+)
+def generate_ai_workflow(
+    data: AIGenerateWorkflowRequest,
+    current_merchant: Merchant = Depends(get_current_merchant),
+) -> AIGeneratedWorkflowResponse:
+    """Analyze refund scenario and synthesize an optimal verification workflow using Google Gemini."""
+    return gemini_workflow_service.generate_workflow(data)
+
+
+@router.post(
+    "/save-full",
+    response_model=WorkflowResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Atomically save workflow rules, layers, and steps",
+)
+def save_full_workflow_endpoint(
+    data: WorkflowSaveFullRequest,
+    current_merchant: Merchant = Depends(get_current_merchant),
+    db: Session = Depends(get_db),
+) -> WorkflowResponse:
+    """Save full workflow configuration to SQLite database and mark as active."""
+    workflow = workflow_service.save_full_workflow(
+        db=db,
+        merchant_id=current_merchant.id,
+        data=data,
+    )
+    return WorkflowResponse.model_validate(workflow)
+
+
+@router.post(
+    "/{workflow_id}/activate",
+    response_model=WorkflowResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Set workflow as the active one for merchant",
+)
+def activate_workflow_endpoint(
+    workflow_id: str,
+    current_merchant: Merchant = Depends(get_current_merchant),
+    db: Session = Depends(get_db),
+) -> WorkflowResponse:
+    """Activate specified workflow and deactivate others for this merchant."""
+    workflow = workflow_service.activate_merchant_workflow(
+        db=db,
+        merchant_id=current_merchant.id,
+        workflow_id=workflow_id,
+    )
+    return WorkflowResponse.model_validate(workflow)
 
 
 # ---------------------------------------------------------------------------

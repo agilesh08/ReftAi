@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # Authentication & Security
     JWT_SECRET_KEY: str = "dev-secret-key-change-in-production-min-32-chars-long!"
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 43200  # 30 days for uninterrupted merchant session
 
     # Verification Sessions & Public Access (Milestone 5)
     VERIFICATION_SESSION_EXPIRY_HOURS: int = 72
